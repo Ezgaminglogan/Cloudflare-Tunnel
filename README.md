@@ -46,8 +46,10 @@ Both **Cloudflare** (`cloudflared.exe`) and **Ngrok** (`ngrok.exe`) are **direct
   - 24-bit high-contrast RGB black/white rendering for instant scanning with smartphone cameras on local WiFi or mobile networks.
 - 📋 **Automatic Clipboard Sync**:
   - Copies generated public HTTPS tunnel URLs straight to the Windows clipboard upon connection.
-- 🔍 **Active Port Scanner & Presets**:
-  - Automatically scans and lists local TCP ports currently in `Listen` state on your system.
+- � **Live Tunnel Dashboard**:
+  - Real-time status strip with uptime counter, traffic event count, and a rolling edge-traffic log.
+- �🔍 **Active Port Scanner & Presets**:
+  - Scans local TCP ports in `Listen` state and resolves the **owning process name + PID** (via Win32 `GetExtendedTcpTable`, like `netstat -ano`).
   - Quick presets for popular stacks:
     - **Next.js / React** (Port `3000`)
     - **Vite / Vue / Svelte** (Port `5173`)
@@ -71,13 +73,19 @@ Both **Cloudflare** (`cloudflared.exe`) and **Ngrok** (`ngrok.exe`) are **direct
 ```
 Cloudflare Tunnel/
 ├── Core/
-│   ├── ITunnelSession.cs            # Abstraction for tunnel lifecycle and output streaming
-│   └── TunnelConfig.cs              # Tunnel configuration models and engine options
+│   ├── Enums.cs                     # TunnelProviderType and TunnelStatus enumerations
+│   ├── Models.cs                    # TunnelOptions, ListeningPortInfo and PortPreset records
+│   ├── IBinaryManager.cs            # Binary discovery/extraction/download abstraction
+│   ├── IPortScanner.cs              # TCP listener discovery abstraction
+│   ├── ITunnelProvider.cs           # Tunnel engine provider abstraction
+│   └── ITunnelSession.cs            # Abstraction for tunnel lifecycle and output streaming
 ├── Infrastructure/
 │   ├── BinaryManager.cs             # Embedded assembly resource streaming and caching
-│   ├── CloudflareTunnelSession.cs   # cloudflared process manager and URL regex parser
-│   ├── NgrokTunnelSession.cs        # ngrok process manager, authtoken setup, API reader
-│   ├── PortDetector.cs              # Win32 IPGlobalProperties TCP port scanner
+│   ├── CloudflareTunnelProvider.cs  # Cloudflare engine resolution and session factory
+│   ├── CloudflareTunnelSession.cs   # cloudflared process manager and URL parser
+│   ├── NgrokTunnelProvider.cs       # Ngrok engine resolution and authtoken setup
+│   ├── NgrokTunnelSession.cs        # ngrok process manager and local API reader
+│   ├── SystemPortScanner.cs         # Win32 IPGlobalProperties TCP port scanner
 │   └── ConsoleWindowHelper.cs       # Win32 User32/Shell32 window centering, icon & styles
 ├── Presentation/
 │   ├── ConsoleTheme.cs              # Spectre.Console color scheme, Figlet banner & info card
@@ -102,17 +110,20 @@ Cloudflare Tunnel/
 ## Getting Started
 
 ### 1. Clone the Repository
+
 ```bash
 git clone https://github.com/your-username/cloudflare-tunnel.git
 cd "cloudflare-tunnel"
 ```
 
 ### 2. Build the Project
+
 ```powershell
 dotnet build "Cloudflare Tunnel\Cloudflare Tunnel.csproj"
 ```
 
 ### 3. Run Locally
+
 ```powershell
 dotnet run --project "Cloudflare Tunnel\Cloudflare Tunnel.csproj"
 ```
@@ -133,6 +144,7 @@ dotnet publish "Cloudflare Tunnel\Cloudflare Tunnel.csproj" `
 ```
 
 The resulting `publish\win-x64\Cloudflare Tunnel.exe` contains:
+
 - The compiled C# application and .NET 10 runtime
 - Embedded `cloudflared.exe` binary
 - Embedded `ngrok.exe` binary
@@ -151,7 +163,7 @@ The resulting `publish\win-x64\Cloudflare Tunnel.exe` contains:
 
 3. **Choose Tunnel Engine**:
    - **Cloudflare**: No registration required. Connects immediately and provisions a `*.trycloudflare.com` edge URL.
-   - **Ngrok**: First-time users will be prompted for an Ngrok authtoken (obtainable free from [dashboard.ngrok.com](https://dashboard.ngrok.com)). Tokens are saved to `%LOCALAPPDATA%\UniversalTunnel\config.json` for all future sessions.
+   - **Ngrok**: First-time users will be prompted for an Ngrok authtoken (obtainable free from [dashboard.ngrok.com](https://dashboard.ngrok.com)). The token is stored by the ngrok agent itself in its standard `ngrok.yml` config file for all future sessions.
 
 4. **Monitor Active Tunnel**:
    - The Public HTTPS URL is displayed and copied to your clipboard.
@@ -166,14 +178,16 @@ The resulting `publish\win-x64\Cloudflare Tunnel.exe` contains:
 
 ## Configuration & Cache Locations
 
-All extracted runtime binaries and saved settings are isolated under:
+All extracted runtime binaries are isolated under:
+
 ```
 %LOCALAPPDATA%\UniversalTunnel\
-├── bin\
-│   ├── cloudflared.exe
-│   └── ngrok.exe
-└── config.json
+└── bin\
+    ├── cloudflared.exe
+    └── ngrok.exe
 ```
+
+The ngrok authtoken is persisted by the ngrok agent in its own `ngrok.yml` configuration file (under `%LOCALAPPDATA%\ngrok\` or `%USERPROFILE%\.ngrok2\`).
 
 ---
 

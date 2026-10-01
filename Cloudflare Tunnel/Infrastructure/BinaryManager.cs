@@ -24,12 +24,20 @@ public class BinaryManager : IBinaryManager
 
     public string GetBinaryDirectory() => _storageDir;
 
+    // Appends ".exe" only when the name carries no extension at all, so callers
+    // may pass archive names like "ngrok.zip" without producing "ngrok.zip.exe".
+    internal static string EnsureExecutableExtension(string fileName)
+    {
+        if (OperatingSystem.IsWindows() && string.IsNullOrEmpty(Path.GetExtension(fileName)))
+        {
+            return fileName + ".exe";
+        }
+        return fileName;
+    }
+
     public string? FindExistingExecutable(string binaryName)
     {
-        if (!binaryName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && OperatingSystem.IsWindows())
-        {
-            binaryName += ".exe";
-        }
+        binaryName = EnsureExecutableExtension(binaryName);
 
         // 1. Check our dedicated app data directory
         string localPath = Path.Combine(_storageDir, binaryName);
@@ -70,16 +78,24 @@ public class BinaryManager : IBinaryManager
         return null;
     }
 
+    /// <summary>
+    /// Length of an embedded resource stream, or null if the resource isn't packed.
+    /// Used to detect stale cached binaries when the app ships a newer engine.
+    /// </summary>
+    internal static long? GetEmbeddedResourceLength(string resourceName)
+    {
+        var assembly = Assembly.GetExecutingAssembly();
+        using Stream? stream = assembly.GetManifestResourceStream(resourceName);
+        return stream?.Length;
+    }
+
     public async Task<string> ExtractEmbeddedBinaryAsync(
         string resourceName,
         string targetFileName,
         IProgress<(long bytesProcessed, long totalBytes, double speedBytesPerSec)>? progress = null,
         CancellationToken ct = default)
     {
-        if (!targetFileName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && OperatingSystem.IsWindows())
-        {
-            targetFileName += ".exe";
-        }
+        targetFileName = EnsureExecutableExtension(targetFileName);
 
         string targetPath = Path.Combine(_storageDir, targetFileName);
 
@@ -122,35 +138,38 @@ public class BinaryManager : IBinaryManager
             }
         }
 
-        string tempPath = targetPath + ".tmp";
-        if (File.Exists(tempPath))
+        // Unique temp name so concurrent app instances can't clobber each other.
+        string tempPath = targetPath + "." + Path.GetRandomFileName() + ".tmp";
+        try
         {
-            try { File.Delete(tempPath); } catch { }
-        }
+            var sw = Stopwatch.StartNew();
+            long bytesProcessed = 0;
+            byte[] buffer = new byte[128 * 1024]; // 128 KB buffer
 
-        var sw = Stopwatch.StartNew();
-        long bytesProcessed = 0;
-        byte[] buffer = new byte[128 * 1024]; // 128 KB buffer
-
-        await using (var dest = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None, buffer.Length, useAsync: true))
-        {
-            int bytesRead;
-            while ((bytesRead = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), ct)) > 0)
+            await using (var dest = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, buffer.Length, useAsync: true))
             {
-                await dest.WriteAsync(buffer.AsMemory(0, bytesRead), ct);
-                bytesProcessed += bytesRead;
-                double speed = sw.Elapsed.TotalSeconds > 0.05 ? bytesProcessed / sw.Elapsed.TotalSeconds : 0;
-                progress?.Report((bytesProcessed, totalBytes, speed));
+                int bytesRead;
+                while ((bytesRead = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), ct)) > 0)
+                {
+                    await dest.WriteAsync(buffer.AsMemory(0, bytesRead), ct);
+                    bytesProcessed += bytesRead;
+                    double speed = sw.Elapsed.TotalSeconds > 0.05 ? bytesProcessed / sw.Elapsed.TotalSeconds : 0;
+                    progress?.Report((bytesProcessed, totalBytes, speed));
+                }
             }
-        }
 
-        if (File.Exists(targetPath))
+            if (File.Exists(targetPath))
+            {
+                try { File.Delete(targetPath); } catch { }
+            }
+
+            File.Move(tempPath, targetPath);
+            return targetPath;
+        }
+        finally
         {
-            try { File.Delete(targetPath); } catch { }
+            try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
         }
-
-        File.Move(tempPath, targetPath);
-        return targetPath;
     }
 
     public async Task<string> DownloadBinaryAsync(
@@ -159,42 +178,46 @@ public class BinaryManager : IBinaryManager
         IProgress<(long bytesProcessed, long totalBytes, double speedBytesPerSec)>? progress = null,
         CancellationToken ct = default)
     {
-        if (!targetFileName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && OperatingSystem.IsWindows())
-        {
-            targetFileName += ".exe";
-        }
+        targetFileName = EnsureExecutableExtension(targetFileName);
 
         string targetPath = Path.Combine(_storageDir, targetFileName);
-        string tempPath = targetPath + ".download";
+        string tempPath = targetPath + "." + Path.GetRandomFileName() + ".download";
 
-        using var client = new HttpClient();
-        using var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
-        response.EnsureSuccessStatusCode();
-
-        long totalBytes = response.Content.Headers.ContentLength ?? -1;
-
-        await using var stream = await response.Content.ReadAsStreamAsync(ct);
-        await using var dest = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None, 128 * 1024, useAsync: true);
-
-        var sw = Stopwatch.StartNew();
-        long bytesProcessed = 0;
-        byte[] buffer = new byte[128 * 1024];
-
-        int bytesRead;
-        while ((bytesRead = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), ct)) > 0)
+        try
         {
-            await dest.WriteAsync(buffer.AsMemory(0, bytesRead), ct);
-            bytesProcessed += bytesRead;
-            double speed = sw.Elapsed.TotalSeconds > 0.05 ? bytesProcessed / sw.Elapsed.TotalSeconds : 0;
-            progress?.Report((bytesProcessed, totalBytes, speed));
-        }
+            using var client = new HttpClient();
+            using var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+            response.EnsureSuccessStatusCode();
 
-        if (File.Exists(targetPath))
+            long totalBytes = response.Content.Headers.ContentLength ?? -1;
+
+            await using var stream = await response.Content.ReadAsStreamAsync(ct);
+            await using var dest = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 128 * 1024, useAsync: true);
+
+            var sw = Stopwatch.StartNew();
+            long bytesProcessed = 0;
+            byte[] buffer = new byte[128 * 1024];
+
+            int bytesRead;
+            while ((bytesRead = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), ct)) > 0)
+            {
+                await dest.WriteAsync(buffer.AsMemory(0, bytesRead), ct);
+                bytesProcessed += bytesRead;
+                double speed = sw.Elapsed.TotalSeconds > 0.05 ? bytesProcessed / sw.Elapsed.TotalSeconds : 0;
+                progress?.Report((bytesProcessed, totalBytes, speed));
+            }
+
+            if (File.Exists(targetPath))
+            {
+                try { File.Delete(targetPath); } catch { }
+            }
+
+            File.Move(tempPath, targetPath);
+            return targetPath;
+        }
+        finally
         {
-            try { File.Delete(targetPath); } catch { }
+            try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
         }
-
-        File.Move(tempPath, targetPath);
-        return targetPath;
     }
 }

@@ -26,13 +26,20 @@ public class CloudflareTunnelProvider : ITunnelProvider
             return _cachedBinaryPath;
         }
 
-        // 1. Check if already extracted in %LOCALAPPDATA%\UniversalTunnel\bin
         string? existing = _binaryManager.FindExistingExecutable("cloudflared");
         if (existing != null)
         {
-            _cachedBinaryPath = existing;
-            progress?.Report((1, 1, 0));
-            return existing;
+            // A binary found on PATH or next to the app is user-managed — trust it.
+            // A binary in our own cache dir must match the embedded engine's size,
+            // otherwise a stale copy from an older build would be used forever.
+            bool isManagedByUs = existing.StartsWith(_binaryManager.GetBinaryDirectory(), StringComparison.OrdinalIgnoreCase);
+            long? embeddedLength = BinaryManager.GetEmbeddedResourceLength("cloudflare.cloudflared.exe");
+            if (!isManagedByUs || embeddedLength == null || new FileInfo(existing).Length == embeddedLength)
+            {
+                _cachedBinaryPath = existing;
+                progress?.Report((1, 1, 0));
+                return existing;
+            }
         }
 
         // 2. Extract from Embedded Resource

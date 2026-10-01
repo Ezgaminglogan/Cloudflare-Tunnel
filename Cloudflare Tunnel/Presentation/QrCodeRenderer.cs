@@ -13,7 +13,7 @@ public static class QrCodeRenderer
     /// </summary>
     public static Panel RenderQrCode(string text, string title = "[[QR]] MOBILE ACCESS")
     {
-        var qr = QrCode.EncodeText(text, QrCode.Ecc.Low);
+        var qr = QrCode.EncodeText(text, QrCode.Ecc.Medium);
         int border = 2; // 2-module quiet zone for reliable mobile phone camera detection
         int size = qr.Size;
         int totalWidth = size + (border * 2);

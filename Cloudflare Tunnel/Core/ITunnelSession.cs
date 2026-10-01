@@ -10,7 +10,7 @@ public interface ITunnelSession : IAsyncDisposable
 
     event Action<string>? OutputReceived;
     event Action<Uri>? PublicUrlAssigned;
-    event Action<string>? StatusChanged;
+    event Action<TunnelStatus>? StatusChanged;
 
     Task WaitForExitAsync(CancellationToken cancellationToken = default);
     Task StopAsync(CancellationToken cancellationToken = default);

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO.Compression;
 using Cloudflare_Tunnel.Core;
 
@@ -27,13 +28,19 @@ public class NgrokTunnelProvider : ITunnelProvider
             return _cachedBinaryPath;
         }
 
-        // 1. Check if already extracted in %LOCALAPPDATA%\UniversalTunnel\bin
         string? existing = _binaryManager.FindExistingExecutable("ngrok");
         if (existing != null)
         {
-            _cachedBinaryPath = existing;
-            progress?.Report((1, 1, 0));
-            return existing;
+            // Trust user-managed installs (PATH / app dir); refresh our own cache
+            // copy when it no longer matches the embedded engine.
+            bool isManagedByUs = existing.StartsWith(_binaryManager.GetBinaryDirectory(), StringComparison.OrdinalIgnoreCase);
+            long? embeddedLength = BinaryManager.GetEmbeddedResourceLength("ngrok.ngrok.exe");
+            if (!isManagedByUs || embeddedLength == null || new FileInfo(existing).Length == embeddedLength)
+            {
+                _cachedBinaryPath = existing;
+                progress?.Report((1, 1, 0));
+                return existing;
+            }
         }
 
         // 2. Extract from Embedded Resource
@@ -53,19 +60,57 @@ public class NgrokTunnelProvider : ITunnelProvider
             // 3. Fallback: Download if embedded resource is missing
             var zipUrl = new Uri("https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip");
             string zipPath = await _binaryManager.DownloadBinaryAsync(zipUrl, "ngrok.zip", progress, ct);
-            string targetExePath = Path.Combine(_binaryManager.GetBinaryDirectory(), "ngrok.exe");
-            using (var archive = System.IO.Compression.ZipFile.OpenRead(zipPath))
+            try
             {
-                var entry = archive.GetEntry("ngrok.exe") ?? archive.Entries.FirstOrDefault(e => e.Name.Equals("ngrok.exe", StringComparison.OrdinalIgnoreCase));
-                if (entry != null)
+                string targetExePath = Path.Combine(_binaryManager.GetBinaryDirectory(), "ngrok.exe");
+                using (var archive = ZipFile.OpenRead(zipPath))
                 {
-                    entry.ExtractToFile(targetExePath, overwrite: true);
+                    var entry = archive.GetEntry("ngrok.exe")
+                        ?? archive.Entries.FirstOrDefault(e => e.Name.Equals("ngrok.exe", StringComparison.OrdinalIgnoreCase));
+                    entry?.ExtractToFile(targetExePath, overwrite: true);
+                }
+
+                if (!File.Exists(targetExePath))
+                {
+                    throw new FileNotFoundException("ngrok.exe was not found inside the downloaded archive.");
+                }
+
+                _cachedBinaryPath = targetExePath;
+                return targetExePath;
+            }
+            finally
+            {
+                try { File.Delete(zipPath); } catch { }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Locates an existing ngrok config file containing an authtoken, so the
+    /// user isn't re-prompted every run. Covers both the v3 OS config dir and
+    /// the legacy v2 profile location.
+    /// </summary>
+    public static string? FindSavedConfigPath()
+    {
+        string[] candidates =
+        {
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ngrok", "ngrok.yml"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ngrok2", "ngrok.yml")
+        };
+
+        foreach (string path in candidates)
+        {
+            try
+            {
+                if (File.Exists(path) && File.ReadAllText(path).Contains("authtoken", StringComparison.OrdinalIgnoreCase))
+                {
+                    return path;
                 }
             }
-            try { File.Delete(zipPath); } catch { }
-            _cachedBinaryPath = targetExePath;
-            return targetExePath;
+            catch { }
         }
+
+        return null;
     }
 
     public async Task<ITunnelSession> StartTunnelAsync(TunnelOptions options, CancellationToken ct = default)
@@ -74,18 +119,41 @@ public class NgrokTunnelProvider : ITunnelProvider
 
         if (!string.IsNullOrWhiteSpace(options.AuthToken))
         {
-            using var proc = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = binaryPath,
-                Arguments = $"config add-authtoken {options.AuthToken}",
-                CreateNoWindow = true,
-                UseShellExecute = false
-            });
-            if (proc != null) await proc.WaitForExitAsync(ct);
+            await RegisterAuthTokenAsync(binaryPath, options.AuthToken, ct);
         }
 
         var session = new NgrokTunnelSession(binaryPath, options);
         session.Start();
         return session;
+    }
+
+    private static async Task RegisterAuthTokenAsync(string binaryPath, string authToken, CancellationToken ct)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = binaryPath,
+            Arguments = $"config add-authtoken {authToken}",
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+
+        using var proc = Process.Start(startInfo)
+            ?? throw new InvalidOperationException("Failed to launch ngrok to configure the authtoken.");
+
+        // Read both pipes concurrently so a full stderr/stdout buffer can't block the child.
+        Task<string> stdoutTask = proc.StandardOutput.ReadToEndAsync(ct);
+        Task<string> stderrTask = proc.StandardError.ReadToEndAsync(ct);
+        await proc.WaitForExitAsync(ct);
+        string stdout = await stdoutTask;
+        string stderr = await stderrTask;
+
+        if (proc.ExitCode != 0)
+        {
+            string detail = string.IsNullOrWhiteSpace(stderr) ? stdout : stderr;
+            throw new InvalidOperationException(
+                $"ngrok rejected the authtoken (exit code {proc.ExitCode}): {detail.Trim()}");
+        }
     }
 }

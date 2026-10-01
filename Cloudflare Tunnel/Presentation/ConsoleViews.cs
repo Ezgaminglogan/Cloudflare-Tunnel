@@ -1,6 +1,8 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using Cloudflare_Tunnel.Core;
 using Spectre.Console;
+using Spectre.Console.Rendering;
 using TextCopy;
 
 namespace Cloudflare_Tunnel.Presentation;
@@ -9,68 +11,65 @@ public static class ConsoleViews
 {
     private static readonly List<PortPreset> Presets = new()
     {
-        new("Next.js / React", 3000, "Frontend SPA / SSR", "Standard Node/Next Dev Server"),
-        new("Vite / Vue / Svelte", 5173, "Modern Frontend", "Fast HMR Dev Server"),
-        new("ASP.NET Core HTTP", 5000, "Backend / API", "Default Kestrel Local HTTP"),
-        new("FastAPI / Django", 8000, "Python Web / API", "Uvicorn / Gunicorn / RunServer")
+        new("Next.js / React", 3000, "Standard Node/Next Dev Server"),
+        new("Vite / Vue / Svelte", 5173, "Fast HMR Dev Server"),
+        new("ASP.NET Core HTTP", 5000, "Default Kestrel Local HTTP"),
+        new("FastAPI / Django", 8000, "Uvicorn / Gunicorn / RunServer")
     };
 
-    public static TunnelProviderType PromptProvider()
+    private enum PortAction { Select, Scan, Custom, Exit, Back }
+
+    private sealed record PortMenuItem(PortAction Action, int Port, string Label);
+    private sealed record ProviderMenuItem(TunnelProviderType? Provider, string Label);
+
+    private static readonly Style Highlight = new(Color.FromHex("F38020"), decoration: Decoration.Bold);
+
+    public static TunnelProviderType? PromptProvider()
     {
-        var choice = AnsiConsole.Prompt(
-            new SelectionPrompt<string>()
+        var selection = AnsiConsole.Prompt(
+            new SelectionPrompt<ProviderMenuItem>()
                 .Title("  [bold white]Choose your Tunnel Provider:[/]\n  [grey]Select tunneling infrastructure to route traffic:[/]")
-                .PageSize(5)
-                .HighlightStyle(new Style(Color.FromHex("F38020"), decoration: Decoration.Bold))
-                .AddChoices(new[]
-                {
-                    "  [bold orange3][[CF]][/] Cloudflare Tunnel (Embedded binary, 100% Free, Zero configuration)",
-                    "  [bold cyan][[NGROK]][/] Ngrok Tunnel (Embedded binary, Authtoken required)"
-                })
+                .PageSize(6)
+                .HighlightStyle(Highlight)
+                .UseConverter(item => item.Label)
+                .AddChoices(
+                    new ProviderMenuItem(TunnelProviderType.Cloudflare, "  [bold orange3][[CF]][/] Cloudflare Tunnel (Embedded binary, 100% Free, Zero configuration)"),
+                    new ProviderMenuItem(TunnelProviderType.Ngrok, "  [bold cyan][[NGROK]][/] Ngrok Tunnel (Embedded binary, Authtoken required)"),
+                    new ProviderMenuItem(null, "  [grey][[<]][/] Back to port selection"))
         );
 
-        return choice.Contains("[CF]") ? TunnelProviderType.Cloudflare : TunnelProviderType.Ngrok;
+        return selection.Provider;
     }
 
     public static async Task<int?> PromptPortSelectionAsync(IPortScanner scanner)
     {
-        var menuChoices = new List<string>();
+        var menuChoices = Presets
+            .Select(p => new PortMenuItem(
+                PortAction.Select,
+                p.Port,
+                $"  [grey]>[/] [bold white]{p.Name}[/] [grey](Port {p.Port})[/] - [dim]{p.Description}[/]"))
+            .ToList();
 
-        foreach (var p in Presets)
-        {
-            menuChoices.Add($"  [grey]>[/] [bold white]{p.Name}[/] [grey](Port {p.Port})[/] - [dim]{p.Description}[/]");
-        }
-
-        menuChoices.Add("  [cyan][[SCAN]][/] Scan active listening ports on this PC");
-        menuChoices.Add("  [yellow][[CUSTOM]][/] Enter custom port number");
-        menuChoices.Add("  [red][[EXIT]][/] Exit");
+        menuChoices.Add(new PortMenuItem(PortAction.Scan, 0, "  [cyan][[SCAN]][/] Scan active listening ports on this PC"));
+        menuChoices.Add(new PortMenuItem(PortAction.Custom, 0, "  [yellow][[CUSTOM]][/] Enter custom port number"));
+        menuChoices.Add(new PortMenuItem(PortAction.Exit, 0, "  [red][[EXIT]][/] Exit"));
 
         var selection = AnsiConsole.Prompt(
-            new SelectionPrompt<string>()
+            new SelectionPrompt<PortMenuItem>()
                 .Title("  [bold white]Select a project or local port to tunnel:[/]")
                 .PageSize(10)
-                .HighlightStyle(new Style(Color.FromHex("F38020"), decoration: Decoration.Bold))
+                .HighlightStyle(Highlight)
+                .UseConverter(item => item.Label)
                 .AddChoices(menuChoices)
         );
 
-        if (selection.Contains("[EXIT]"))
+        return selection.Action switch
         {
-            return null;
-        }
-
-        if (selection.Contains("[SCAN]"))
-        {
-            return await ScanAndSelectPortAsync(scanner);
-        }
-
-        if (selection.Contains("[CUSTOM]"))
-        {
-            return PromptCustomPort();
-        }
-
-        // Match selected preset
-        var match = Presets.FirstOrDefault(p => selection.Contains($"Port {p.Port}"));
-        return match?.Port ?? 3000;
+            PortAction.Exit => null,
+            PortAction.Scan => await ScanAndSelectPortAsync(scanner),
+            PortAction.Custom => PromptCustomPort(),
+            _ => selection.Port
+        };
     }
 
     public static async Task<int?> ScanAndSelectPortAsync(IPortScanner scanner)
@@ -98,15 +97,21 @@ public static class ConsoleViews
             .Border(TableBorder.Rounded)
             .BorderColor(Color.FromHex("374151"))
             .AddColumn(new TableColumn("[bold cyan]Port[/]").Centered())
+            .AddColumn(new TableColumn("[bold white]Process[/]"))
             .AddColumn(new TableColumn("[bold white]Bound Address[/]"))
             .AddColumn(new TableColumn("[bold green]Protocol[/]"))
             .AddColumn(new TableColumn("[bold grey]Identified Service[/]"));
 
         foreach (var port in activePorts)
         {
+            string processCell = !string.IsNullOrEmpty(port.ProcessName)
+                ? $"[bold white]{Markup.Escape(port.ProcessName)}[/][dim grey] ({port.ProcessId})[/]"
+                : "[dim grey]unknown[/]";
+
             table.AddRow(
                 $"[bold gold1]{port.Port}[/]",
-                $"[white]{port.HostAddress}[/]",
+                processCell,
+                $"[white]{Markup.Escape(port.HostAddress)}[/]",
                 $"[green]{port.Protocol}[/]",
                 $"[grey]{port.Description}[/]"
             );
@@ -115,23 +120,26 @@ public static class ConsoleViews
         AnsiConsole.Write(table);
         AnsiConsole.WriteLine();
 
-        var choices = activePorts.Select(p => $"Port {p.Port} - {p.Description} ({p.HostAddress})").ToList();
-        choices.Add("[[<]] Back to Main Menu");
+        var choices = activePorts
+            .Select(p => new PortMenuItem(
+                PortAction.Select,
+                p.Port,
+                $"Port {p.Port} - {(string.IsNullOrEmpty(p.ProcessName) ? p.Description : Markup.Escape(p.ProcessName))} ({Markup.Escape(p.HostAddress)})"))
+            .ToList();
+        choices.Add(new PortMenuItem(PortAction.Back, 0, "[[<]] Back to Main Menu"));
 
         var selected = AnsiConsole.Prompt(
-            new SelectionPrompt<string>()
+            new SelectionPrompt<PortMenuItem>()
                 .Title("[bold white]Select detected port to expose:[/]")
-                .HighlightStyle(new Style(Color.FromHex("F38020"), decoration: Decoration.Bold))
+                .PageSize(15)
+                .HighlightStyle(Highlight)
+                .UseConverter(item => item.Label)
                 .AddChoices(choices)
         );
 
-        if (selected.Contains("Back to Main Menu"))
-        {
-            return await PromptPortSelectionAsync(scanner);
-        }
-
-        string portStr = selected.Split(' ')[1];
-        return int.TryParse(portStr, out int portNum) ? portNum : 5000;
+        return selected.Action == PortAction.Back
+            ? await PromptPortSelectionAsync(scanner)
+            : selected.Port;
     }
 
     public static int PromptCustomPort()
@@ -147,6 +155,7 @@ public static class ConsoleViews
     public static async Task<string> EnsureBinaryWithRealProgressAsync(ITunnelProvider provider)
     {
         string binaryPath = "";
+        string taskLabel = $"Preparing {provider.DisplayName} engine";
 
         await AnsiConsole.Progress()
             .AutoRefresh(true)
@@ -166,23 +175,29 @@ public static class ConsoleViews
 
                 var progressHandler = new Progress<(long processed, long total, double speed)>(p =>
                 {
-                    if (task == null && p.total > 0)
+                    if (task == null)
                     {
-                        string action = provider.Type == TunnelProviderType.Cloudflare
-                            ? "Extracting embedded Cloudflare engine"
-                            : "Extracting embedded Ngrok engine";
-
-                        task = ctx.AddTask($"[bold white]{action}[/]", maxValue: p.total);
+                        task = ctx.AddTask($"[bold white]{taskLabel}[/]", maxValue: Math.Max(p.total, 1));
+                        task.IsIndeterminate = p.total <= 0;
+                    }
+                    else if (task.IsIndeterminate && p.total > 0)
+                    {
+                        task.IsIndeterminate = false;
+                        task.MaxValue = p.total;
                     }
 
-                    if (task != null)
+                    if (!task.IsIndeterminate)
                     {
-                        task.Value = p.processed;
+                        task.Value = Math.Min(p.processed, task.MaxValue);
                     }
                 });
 
                 binaryPath = await provider.EnsureBinaryAvailableAsync(progressHandler);
-                if (task != null) task.Value = task.MaxValue;
+                if (task != null)
+                {
+                    task.IsIndeterminate = false;
+                    task.Value = task.MaxValue;
+                }
             });
 
         return binaryPath;
@@ -233,6 +248,8 @@ public static class ConsoleViews
                 });
         }
 
+        session.OutputReceived -= logCapture;
+
         if (publicUrl == null)
         {
             AnsiConsole.MarkupLine("[red][[ERROR]][/] Failed to retrieve public tunnel URL. Tunnel process terminated early.");
@@ -258,8 +275,6 @@ public static class ConsoleViews
             catch { }
             return;
         }
-
-        session.OutputReceived -= logCapture;
 
         // 3. Auto-copy to clipboard
         bool copied = false;
@@ -315,23 +330,41 @@ public static class ConsoleViews
         AnsiConsole.MarkupLine("[bold white]Instructions:[/] Share the Public URL or scan the QR code to open your local project in any web browser.");
         AnsiConsole.MarkupLine("[bold red]Press [[Q]] or [[Ctrl+C]] to disconnect tunnel and return to menu.[/]\n");
 
-        // 5. Real-time stream of traffic logs or wait for exit
-        var logRule = new Rule("[grey]Edge Traffic Log[/]") { Justification = Justify.Left, Style = new Style(Color.FromHex("374151")) };
-        AnsiConsole.Write(logRule);
+        // 5. Live status strip + rolling traffic log.
+        // OutputReceived fires on process I/O threads, so lines are queued and
+        // drained here on the UI thread to keep console writes serialized.
+        var trafficQueue = new ConcurrentQueue<string>();
+        var recentOutput = new Queue<string>();
 
-        Action<string> trafficLogger = line =>
+        Action<string> outputHandler = line =>
         {
-            // Filter noise, format HTTP requests nicely
+            lock (recentOutput)
+            {
+                if (recentOutput.Count >= 8) recentOutput.Dequeue();
+                recentOutput.Enqueue(line);
+            }
+
             if (line.Contains("HTTP", StringComparison.OrdinalIgnoreCase) ||
                 line.Contains("connIndex", StringComparison.OrdinalIgnoreCase) ||
                 line.Contains("GET", StringComparison.OrdinalIgnoreCase) ||
                 line.Contains("POST", StringComparison.OrdinalIgnoreCase))
             {
-                AnsiConsole.MarkupLine($"[dim grey]{DateTime.Now:HH:mm:ss}[/] [grey]{Markup.Escape(line)}[/]");
+                trafficQueue.Enqueue(line);
             }
         };
 
-        session.OutputReceived += trafficLogger;
+        session.OutputReceived += outputHandler;
+
+        // Drop any keys buffered while the prompts ran so a stray 'q' typed
+        // earlier can't instantly kill the fresh tunnel.
+        try
+        {
+            if (!Console.IsInputRedirected)
+            {
+                while (Console.KeyAvailable) Console.ReadKey(true);
+            }
+        }
+        catch { }
 
         using var dashboardCts = new CancellationTokenSource();
         ConsoleCancelEventHandler cancelHandler = (_, e) =>
@@ -342,37 +375,131 @@ public static class ConsoleViews
 
         Console.CancelKeyPress += cancelHandler;
 
+        var uptime = Stopwatch.StartNew();
+        var liveLog = new Queue<string>();
+        int trafficEvents = 0;
+
         try
         {
-            // Keyboard & cancellation listener loop
-            while (session.IsRunning && !dashboardCts.IsCancellationRequested)
+            if (Console.IsOutputRedirected)
             {
-                try
-                {
-                    if (!Console.IsInputRedirected && Console.KeyAvailable)
+                await RunPlainDashboardLoopAsync(session, dashboardCts.Token);
+            }
+            else
+            {
+                await AnsiConsole.Live(BuildLiveView())
+                    .AutoClear(false)
+                    .StartAsync(async ctx =>
                     {
-                        var key = Console.ReadKey(intercept: true);
-                        if (key.Key is ConsoleKey.Q or ConsoleKey.Escape)
+                        while (session.IsRunning && !dashboardCts.IsCancellationRequested)
                         {
-                            AnsiConsole.MarkupLine("\n[yellow]Stopping tunnel...[/]");
-                            dashboardCts.Cancel();
-                            break;
-                        }
-                    }
-                }
-                catch { }
+                            while (trafficQueue.TryDequeue(out var line))
+                            {
+                                if (liveLog.Count >= 8) liveLog.Dequeue();
+                                liveLog.Enqueue(line);
+                                trafficEvents++;
+                            }
 
-                await Task.Delay(100);
+                            ctx.UpdateTarget(BuildLiveView());
+                            ctx.Refresh();
+
+                            try
+                            {
+                                if (Console.KeyAvailable)
+                                {
+                                    var key = Console.ReadKey(intercept: true);
+                                    if (key.Key is ConsoleKey.Q or ConsoleKey.Escape)
+                                    {
+                                        dashboardCts.Cancel();
+                                        break;
+                                    }
+                                }
+                            }
+                            catch { }
+
+                            await Task.Delay(150);
+                        }
+                    });
             }
         }
         finally
         {
             Console.CancelKeyPress -= cancelHandler;
-            session.OutputReceived -= trafficLogger;
+            session.OutputReceived -= outputHandler;
         }
 
-        AnsiConsole.MarkupLine("[green][[OK]] Tunnel stopped cleanly. Returning to menu...[/]");
-        await session.StopAsync();
+        if (dashboardCts.IsCancellationRequested)
+        {
+            await session.StopAsync();
+            AnsiConsole.MarkupLine("[green][[OK]] Tunnel stopped cleanly. Returning to menu...[/]");
+        }
+        else
+        {
+            // Process exited on its own — surface that instead of a fake "clean stop".
+            AnsiConsole.MarkupLine(session.Status == TunnelStatus.Faulted
+                ? "[red][[FAULT]][/] Tunnel process crashed or was closed externally."
+                : "[yellow][[!]][/] Tunnel process exited unexpectedly.");
+            lock (recentOutput)
+            {
+                if (recentOutput.Count > 0)
+                {
+                    AnsiConsole.MarkupLine("[bold yellow]Last engine output:[/]");
+                    foreach (var line in recentOutput)
+                    {
+                        AnsiConsole.MarkupLine($"[dim grey]>[/] [grey]{Markup.Escape(line)}[/]");
+                    }
+                }
+            }
+            AnsiConsole.MarkupLine("[grey]Press any key to return to main menu...[/]");
+            try
+            {
+                if (!Console.IsInputRedirected)
+                {
+                    Console.ReadKey(true);
+                }
+            }
+            catch { }
+        }
+
         await Task.Delay(500);
+        return;
+
+        IRenderable BuildLiveView()
+        {
+            var layout = new Grid();
+            layout.AddColumn();
+
+            layout.AddRow(new Markup(
+                $"[bold green]● LIVE[/]  [grey]Uptime[/] [bold white]{uptime.Elapsed:hh\\:mm\\:ss}[/]   " +
+                $"[grey]Traffic events[/] [bold white]{trafficEvents}[/]   " +
+                $"[grey]Engine[/] [bold white]{session.Provider}[/]   " +
+                "[bold red][[Q]]/[[Ctrl+C]] disconnect[/]"));
+
+            var logContent = liveLog.Count == 0
+                ? "[dim grey]Waiting for edge traffic...[/]"
+                : string.Join("\n", liveLog.Select(l => $"[dim grey]{DateTime.Now:HH:mm:ss}[/] [grey]{Markup.Escape(l)}[/]"));
+
+            layout.AddRow(new Panel(new Markup(logContent))
+            {
+                Header = new PanelHeader("[grey]Edge Traffic Log[/]", Justify.Left),
+                Border = BoxBorder.Rounded,
+                BorderStyle = new Style(Color.FromHex("374151")),
+                Padding = new Padding(1, 0, 1, 0)
+            });
+
+            return layout;
+        }
+
+        async Task RunPlainDashboardLoopAsync(ITunnelSession s, CancellationToken ct)
+        {
+            while (s.IsRunning && !ct.IsCancellationRequested)
+            {
+                while (trafficQueue.TryDequeue(out var line))
+                {
+                    Console.WriteLine($"{DateTime.Now:HH:mm:ss} {line}");
+                }
+                await Task.Delay(150);
+            }
+        }
     }
 }

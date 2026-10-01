@@ -4,8 +4,14 @@ using Cloudflare_Tunnel.Infrastructure;
 using Cloudflare_Tunnel.Presentation;
 using Spectre.Console;
 
-Console.OutputEncoding = Encoding.UTF8;
-Console.Title = $"Cloudflare Tunnel Manager | Developed by {ConsoleTheme.DeveloperAttribution}";
+try
+{
+    Console.OutputEncoding = Encoding.UTF8;
+    Console.InputEncoding = Encoding.UTF8;
+}
+catch { }
+
+try { Console.Title = $"Cloudflare Tunnel Manager | Developed by {ConsoleTheme.DeveloperAttribution}"; } catch { }
 ConsoleWindowHelper.CenterAndConfigureWindow();
 
 var binaryManager = new BinaryManager();
@@ -13,9 +19,7 @@ var portScanner = new SystemPortScanner();
 var cloudflareProvider = new CloudflareTunnelProvider(binaryManager);
 var ngrokProvider = new NgrokTunnelProvider(binaryManager);
 
-bool keepRunning = true;
-
-while (keepRunning)
+while (true)
 {
     try
     {
@@ -25,14 +29,18 @@ while (keepRunning)
         int? selectedPort = await ConsoleViews.PromptPortSelectionAsync(portScanner);
         if (selectedPort == null)
         {
-            keepRunning = false;
             break;
         }
 
         AnsiConsole.WriteLine();
 
-        // 2. Select Tunnel Provider (Cloudflare or Ngrok)
+        // 2. Select Tunnel Provider (Cloudflare or Ngrok), or go back
         var providerType = ConsoleViews.PromptProvider();
+        if (providerType == null)
+        {
+            continue;
+        }
+
         ITunnelProvider provider = providerType == TunnelProviderType.Cloudflare
             ? cloudflareProvider
             : ngrokProvider;
@@ -42,17 +50,41 @@ while (keepRunning)
         // 3. Ensure Binary with Genuine Real-Time Progress Bar
         await ConsoleViews.EnsureBinaryWithRealProgressAsync(provider);
 
-        // 4. Configure Options & Prompt Ngrok token if needed
+        // 4. Configure Options
         string? authToken = null;
+        string? customDomain = null;
         if (providerType == TunnelProviderType.Ngrok)
         {
-            authToken = AnsiConsole.Prompt(
-                new TextPrompt<string>("[white]Enter Ngrok Authtoken (or press [bold gold1]Enter[/] if already configured):[/]")
+            string? savedConfig = NgrokTunnelProvider.FindSavedConfigPath();
+            if (savedConfig != null)
+            {
+                AnsiConsole.MarkupLine($"[dim]Using saved ngrok authtoken from {Markup.Escape(savedConfig)}[/]");
+            }
+            else
+            {
+                authToken = AnsiConsole.Prompt(
+                    new TextPrompt<string>("[white]Enter Ngrok Authtoken (from [link]dashboard.ngrok.com[/]):[/]")
+                        .AllowEmpty()
+                        .Secret('*')
+                );
+
+                if (string.IsNullOrWhiteSpace(authToken))
+                {
+                    AnsiConsole.MarkupLine("[yellow][[!]][/] No authtoken provided — ngrok requires one to start a tunnel.");
+                }
+            }
+
+            customDomain = AnsiConsole.Prompt(
+                new TextPrompt<string>("[white]Reserved ngrok domain [[optional, e.g. myapp.ngrok-free.dev — Enter to skip]][/]:[/]")
                     .AllowEmpty()
             );
+            if (string.IsNullOrWhiteSpace(customDomain))
+            {
+                customDomain = null;
+            }
         }
 
-        var options = new TunnelOptions(selectedPort.Value, "localhost", AuthToken: authToken);
+        var options = new TunnelOptions(selectedPort.Value, "localhost", CustomSubdomain: customDomain, AuthToken: authToken);
 
         // 5. Start Tunnel Session
         await using var session = await provider.StartTunnelAsync(options);
@@ -68,13 +100,17 @@ while (keepRunning)
     {
         AnsiConsole.MarkupLine("\n[bold red]An unexpected error occurred:[/]");
         AnsiConsole.WriteException(ex);
+
+        // With redirected input every interactive prompt re-throws — don't spin forever.
+        if (Console.IsInputRedirected)
+        {
+            break;
+        }
+
         AnsiConsole.MarkupLine("[grey]Press any key to return to main menu...[/]");
         try
         {
-            if (!Console.IsInputRedirected)
-            {
-                Console.ReadKey(true);
-            }
+            Console.ReadKey(true);
         }
         catch { }
     }

@@ -11,12 +11,13 @@ public record ListeningPortInfo(
     int Port,
     string HostAddress,
     string Protocol,
-    string Description = ""
+    string Description = "",
+    int? ProcessId = null,
+    string ProcessName = ""
 );
 
 public record PortPreset(
     string Name,
     int Port,
-    string Category,
     string Description
 );
