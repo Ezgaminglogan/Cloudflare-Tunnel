@@ -23,6 +23,11 @@ while (true)
 {
     try
     {
+        if (!Console.IsOutputRedirected)
+        {
+            try { AnsiConsole.Clear(); } catch { }
+        }
+
         ConsoleTheme.RenderBanner();
 
         // 1. Select Port or Project

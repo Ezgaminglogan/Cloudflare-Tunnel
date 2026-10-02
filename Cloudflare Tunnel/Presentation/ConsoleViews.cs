@@ -14,69 +14,120 @@ public static class ConsoleViews
         new("Next.js / React", 3000, "Standard Node/Next Dev Server"),
         new("Vite / Vue / Svelte", 5173, "Fast HMR Dev Server"),
         new("ASP.NET Core HTTP", 5000, "Default Kestrel Local HTTP"),
-        new("FastAPI / Django", 8000, "Uvicorn / Gunicorn / RunServer")
+        new("FastAPI / Django", 8000, "Uvicorn / Gunicorn / RunServer"),
+        new("Laravel", 8000, "php artisan serve — default artisan port")
     };
 
-    private enum PortAction { Select, Scan, Custom, Exit, Back }
+    private static Table NewMenuTable(params string[] headers)
+    {
+        var table = new Table()
+            .Border(TableBorder.Rounded)
+            .BorderColor(Color.FromHex("374151"));
 
-    private sealed record PortMenuItem(PortAction Action, int Port, string Label);
-    private sealed record ProviderMenuItem(TunnelProviderType? Provider, string Label);
+        foreach (string header in headers)
+        {
+            table.AddColumn(new TableColumn(header));
+        }
 
-    private static readonly Style Highlight = new(Color.FromHex("F38020"), decoration: Decoration.Bold);
+        return table;
+    }
+
+    private static void WriteCentered(IRenderable renderable)
+        => AnsiConsole.Write(new Align(renderable, HorizontalAlignment.Center));
+
+    private static int PromptNumber(string prompt, int max)
+    {
+        return AnsiConsole.Prompt(
+            new TextPrompt<int>($"[bold white]{prompt}[/]")
+                .PromptStyle("gold1")
+                .ValidationErrorMessage($"[red]Enter a number between 0 and {max}.[/]")
+                .Validate(n => n >= 0 && n <= max)
+        );
+    }
 
     public static TunnelProviderType? PromptProvider()
     {
-        var selection = AnsiConsole.Prompt(
-            new SelectionPrompt<ProviderMenuItem>()
-                .Title("  [bold white]Choose your Tunnel Provider:[/]\n  [grey]Select tunneling infrastructure to route traffic:[/]")
-                .PageSize(6)
-                .HighlightStyle(Highlight)
-                .UseConverter(item => item.Label)
-                .AddChoices(
-                    new ProviderMenuItem(TunnelProviderType.Cloudflare, "  [bold orange3][[CF]][/] Cloudflare Tunnel (Embedded binary, 100% Free, Zero configuration)"),
-                    new ProviderMenuItem(TunnelProviderType.Ngrok, "  [bold cyan][[NGROK]][/] Ngrok Tunnel (Embedded binary, Authtoken required)"),
-                    new ProviderMenuItem(null, "  [grey][[<]][/] Back to port selection"))
-        );
+        WriteCentered(new Markup("[bold white]Choose your Tunnel Provider[/]"));
+        AnsiConsole.WriteLine();
 
-        return selection.Provider;
+        var table = NewMenuTable("[bold cyan]#[/]", "[bold white]Engine[/]", "[bold grey]Details[/]");
+        table.AddRow("[bold gold1]1[/]", "[bold orange3][[CF]][/] Cloudflare Tunnel", "[grey]Embedded binary, 100% Free, Zero configuration[/]");
+        table.AddRow("[bold gold1]2[/]", "[bold cyan][[NGROK]][/] Ngrok Tunnel", "[grey]Embedded binary, Authtoken required[/]");
+        table.AddRow("[dim grey]0[/]", "[grey][[<]][/] [grey]Back to port selection[/]", "");
+        WriteCentered(table);
+        AnsiConsole.WriteLine();
+
+        return PromptNumber("Select provider number:", 2) switch
+        {
+            1 => TunnelProviderType.Cloudflare,
+            2 => TunnelProviderType.Ngrok,
+            _ => null
+        };
     }
 
     public static async Task<int?> PromptPortSelectionAsync(IPortScanner scanner)
     {
-        var menuChoices = Presets
-            .Select(p => new PortMenuItem(
-                PortAction.Select,
-                p.Port,
-                $"  [grey]>[/] [bold white]{p.Name}[/] [grey](Port {p.Port})[/] - [dim]{p.Description}[/]"))
-            .ToList();
+        WriteCentered(new Markup("[bold white]Select a project or local port to tunnel[/]"));
+        AnsiConsole.WriteLine();
 
-        menuChoices.Add(new PortMenuItem(PortAction.Scan, 0, "  [cyan][[SCAN]][/] Scan active listening ports on this PC"));
-        menuChoices.Add(new PortMenuItem(PortAction.Custom, 0, "  [yellow][[CUSTOM]][/] Enter custom port number"));
-        menuChoices.Add(new PortMenuItem(PortAction.Exit, 0, "  [red][[EXIT]][/] Exit"));
-
-        var selection = AnsiConsole.Prompt(
-            new SelectionPrompt<PortMenuItem>()
-                .Title("  [bold white]Select a project or local port to tunnel:[/]")
-                .PageSize(10)
-                .HighlightStyle(Highlight)
-                .UseConverter(item => item.Label)
-                .AddChoices(menuChoices)
-        );
-
-        return selection.Action switch
+        var table = NewMenuTable("[bold cyan]#[/]", "[bold white]Project[/]", "[bold white]Port[/]", "[bold grey]Description[/]");
+        int number = 1;
+        foreach (var p in Presets)
         {
-            PortAction.Exit => null,
-            PortAction.Scan => await ScanAndSelectPortAsync(scanner),
-            PortAction.Custom => PromptCustomPort(),
-            _ => selection.Port
-        };
+            table.AddRow($"[bold gold1]{number++}[/]", $"[bold white]{p.Name}[/]", $"[white]{p.Port}[/]", $"[dim]{p.Description}[/]");
+        }
+        int scanNumber = number++;
+        int customNumber = number++;
+        table.AddRow($"[bold gold1]{scanNumber}[/]", "[cyan][[SCAN]][/]", "—", "[grey]Scan active listening ports on this PC[/]");
+        table.AddRow($"[bold gold1]{customNumber}[/]", "[yellow][[CUSTOM]][/]", "—", "[grey]Enter custom port number[/]");
+        table.AddRow("[dim grey]0[/]", "[red][[EXIT]][/]", "—", "[grey]Exit[/]");
+        WriteCentered(table);
+        AnsiConsole.WriteLine();
+
+        int choice = PromptNumber("Select number:", number - 1);
+        if (choice == 0) return null;
+        if (choice == scanNumber) return await ScanAndSelectPortAsync(scanner);
+        if (choice == customNumber) return PromptCustomPort();
+        return Presets[choice - 1].Port;
     }
+
+    // Runtimes that almost always host a dev web server when they listen on a port.
+    private static readonly HashSet<string> DevRuntimeNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "node", "dotnet", "python", "pythonw", "php", "java", "javaw",
+        "ruby", "perl", "bun", "deno", "nginx", "httpd", "apache",
+        "iisexpress", "w3wp"
+    };
+
+    // Well-known dev-server ports — catches compiled servers (Go, Rust, etc.)
+    // whose process names can't be whitelisted.
+    private static readonly HashSet<int> DevPorts = new()
+    {
+        3000, 3001, 4200, 5000, 5001, 5173, 5174, 5500, 5501,
+        7000, 7001, 7100, 8000, 8080, 8081, 8888, 9000, 1313, 4321
+    };
+
+    // OS core services + databases — never HTTP-tunnelable, always noise.
+    private static readonly HashSet<string> SystemProcessNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "System", "svchost", "lsass", "wininit", "winlogon", "services",
+        "smss", "csrss", "spoolsv", "vmms", "WmiPrvSE", "SearchIndexer",
+        "sqlservr", "mysqld", "mariadbd", "postgres", "redis-server", "mongod", "memcached"
+    };
+
+    private static bool IsLikelyDevServer(ListeningPortInfo p) =>
+        (p.ProcessName.Length > 0 && DevRuntimeNames.Contains(p.ProcessName)) ||
+        DevPorts.Contains(p.Port);
+
+    private static bool IsSystemProcess(ListeningPortInfo p) =>
+        p.ProcessId is 0 or 4 ||
+        (p.ProcessName.Length > 0 && SystemProcessNames.Contains(p.ProcessName));
 
     public static async Task<int?> ScanAndSelectPortAsync(IPortScanner scanner)
     {
         AnsiConsole.MarkupLine("\n[cyan]Auditing active network sockets...[/]");
 
-        IReadOnlyList<ListeningPortInfo> activePorts = Array.Empty<ListeningPortInfo>();
+        IReadOnlyList<ListeningPortInfo> allListeners = Array.Empty<ListeningPortInfo>();
 
         await AnsiConsole.Status()
             .Spinner(Spinner.Known.Dots)
@@ -84,31 +135,54 @@ public static class ConsoleViews
             .StartAsync("Detecting running local servers...", async _ =>
             {
                 await Task.Delay(200); // brief moment for socket enumeration
-                activePorts = scanner.GetActiveListeners(1000, 65000);
+                allListeners = scanner.GetActiveListeners(1000, 65000);
             });
 
-        if (activePorts.Count == 0)
+        if (allListeners.Count == 0)
         {
             AnsiConsole.MarkupLine("[yellow][[!]][/] No active listening TCP ports detected on this PC.");
             return PromptCustomPort();
         }
 
-        var table = new Table()
-            .Border(TableBorder.Rounded)
-            .BorderColor(Color.FromHex("374151"))
-            .AddColumn(new TableColumn("[bold cyan]Port[/]").Centered())
-            .AddColumn(new TableColumn("[bold white]Process[/]"))
-            .AddColumn(new TableColumn("[bold white]Bound Address[/]"))
-            .AddColumn(new TableColumn("[bold green]Protocol[/]"))
-            .AddColumn(new TableColumn("[bold grey]Identified Service[/]"));
-
-        foreach (var port in activePorts)
+        // Prefer dev servers; fall back to non-system processes; last resort is everything.
+        var activePorts = allListeners.Where(IsLikelyDevServer).ToList();
+        if (activePorts.Count == 0)
         {
+            activePorts = allListeners.Where(l => !IsSystemProcess(l)).ToList();
+            if (activePorts.Count > 0)
+            {
+                AnsiConsole.MarkupLine("[dim grey]No framework dev servers detected — showing non-system listeners.[/]");
+            }
+        }
+        if (activePorts.Count == 0)
+        {
+            activePorts = allListeners.ToList();
+            AnsiConsole.MarkupLine("[dim grey]No dev servers detected — showing all listeners.[/]");
+        }
+
+        int hiddenCount = allListeners.Count - activePorts.Count;
+        if (hiddenCount > 0)
+        {
+            AnsiConsole.MarkupLine($"[dim grey]({hiddenCount} system-service listener(s) hidden — use Custom for anything else)[/]");
+        }
+
+        var table = NewMenuTable(
+            "[bold cyan]#[/]",
+            "[bold cyan]Port[/]",
+            "[bold white]Process[/]",
+            "[bold white]Bound Address[/]",
+            "[bold green]Protocol[/]",
+            "[bold grey]Identified Service[/]");
+
+        for (int i = 0; i < activePorts.Count; i++)
+        {
+            var port = activePorts[i];
             string processCell = !string.IsNullOrEmpty(port.ProcessName)
                 ? $"[bold white]{Markup.Escape(port.ProcessName)}[/][dim grey] ({port.ProcessId})[/]"
                 : "[dim grey]unknown[/]";
 
             table.AddRow(
+                $"[bold gold1]{i + 1}[/]",
                 $"[bold gold1]{port.Port}[/]",
                 processCell,
                 $"[white]{Markup.Escape(port.HostAddress)}[/]",
@@ -116,30 +190,17 @@ public static class ConsoleViews
                 $"[grey]{port.Description}[/]"
             );
         }
+        table.AddRow("[dim grey]0[/]", "[grey][[<]][/]", "[grey]Back[/]", "", "", "");
 
-        AnsiConsole.Write(table);
+        WriteCentered(new Markup("[bold white]Detected listening ports[/]"));
+        AnsiConsole.WriteLine();
+        WriteCentered(table);
         AnsiConsole.WriteLine();
 
-        var choices = activePorts
-            .Select(p => new PortMenuItem(
-                PortAction.Select,
-                p.Port,
-                $"Port {p.Port} - {(string.IsNullOrEmpty(p.ProcessName) ? p.Description : Markup.Escape(p.ProcessName))} ({Markup.Escape(p.HostAddress)})"))
-            .ToList();
-        choices.Add(new PortMenuItem(PortAction.Back, 0, "[[<]] Back to Main Menu"));
-
-        var selected = AnsiConsole.Prompt(
-            new SelectionPrompt<PortMenuItem>()
-                .Title("[bold white]Select detected port to expose:[/]")
-                .PageSize(15)
-                .HighlightStyle(Highlight)
-                .UseConverter(item => item.Label)
-                .AddChoices(choices)
-        );
-
-        return selected.Action == PortAction.Back
+        int choice = PromptNumber("Select number of the port to expose:", activePorts.Count);
+        return choice == 0
             ? await PromptPortSelectionAsync(scanner)
-            : selected.Port;
+            : activePorts[choice - 1].Port;
     }
 
     public static int PromptCustomPort()

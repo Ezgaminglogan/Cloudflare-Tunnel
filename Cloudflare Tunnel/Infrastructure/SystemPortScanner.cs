@@ -2,41 +2,12 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
-using System.Runtime.InteropServices;
 using Cloudflare_Tunnel.Core;
 
 namespace Cloudflare_Tunnel.Infrastructure;
 
 public class SystemPortScanner : IPortScanner
 {
-    private const int AF_INET = 2;
-    private const int AF_INET6 = 23;
-    private const int TcpTableOwnerPidListener = 3;
-    private const int MibTcpStateListen = 2;
-
-    [DllImport("iphlpapi.dll", SetLastError = true)]
-    private static extern uint GetExtendedTcpTable(IntPtr pTcpTable, ref uint pdwSize, bool bOrder, uint ulAf, int tableClass, uint reserved);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MibTcpRowOwnerPid
-    {
-        public uint State;
-        public uint LocalAddr;
-        public uint LocalPort;
-        public uint OwningPid;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MibTcp6RowOwnerPid
-    {
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 16)]
-        public byte[] LocalAddr;
-        public uint LocalScopeId;
-        public uint State;
-        public uint LocalPort;
-        public uint OwningPid;
-    }
-
     private sealed record ListenerOwner(int Port, string Address, int Pid);
 
     public IReadOnlyList<ListeningPortInfo> GetActiveListeners(int minPort = 1000, int maxPort = 65000)
@@ -87,70 +58,52 @@ public class SystemPortScanner : IPortScanner
     }
 
     /// <summary>
-    /// Enumerates IPv4 + IPv6 TCP listeners with their owning PIDs via the
-    /// Win32 GetExtendedTcpTable API (equivalent to `netstat -ano`).
+    /// Enumerates TCP listeners with owning PIDs by parsing `netstat -ano -p tcp`
+    /// (the OS's own output — no fragile struct layouts). Sample row:
+    /// "  TCP    0.0.0.0:49664    0.0.0.0:0    LISTENING    920"
     /// </summary>
     private static List<ListenerOwner> GetWindowsListenerOwners()
     {
         var owners = new List<ListenerOwner>();
-        ReadTcpTable(AF_INET, isV6: false, owners);
-        ReadTcpTable(AF_INET6, isV6: true, owners);
+
+        using var proc = Process.Start(new ProcessStartInfo
+        {
+            FileName = "netstat",
+            Arguments = "-ano -p tcp",
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        });
+        if (proc == null) return owners;
+
+        string output = proc.StandardOutput.ReadToEnd();
+        proc.WaitForExit(5000);
+
+        foreach (var line in output.Split('\n'))
+        {
+            var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length < 5 || parts[0] != "TCP" || parts[3] != "LISTENING")
+            {
+                continue;
+            }
+
+            // Local endpoint is addr:port (IPv6 addrs arrive bracketed: [::]:443)
+            string local = parts[1];
+            int sep = local.LastIndexOf(':');
+            if (sep < 0 || !int.TryParse(local[(sep + 1)..], out int port))
+            {
+                continue;
+            }
+
+            if (!int.TryParse(parts[4], out int pid))
+            {
+                continue;
+            }
+
+            owners.Add(new ListenerOwner(port, local[..sep].Trim('[', ']'), pid));
+        }
+
         return owners;
-    }
-
-    private static void ReadTcpTable(uint addressFamily, bool isV6, List<ListenerOwner> results)
-    {
-        uint bufferSize = 0;
-        GetExtendedTcpTable(IntPtr.Zero, ref bufferSize, true, addressFamily, TcpTableOwnerPidListener, 0);
-        if (bufferSize == 0) return;
-
-        IntPtr buffer = Marshal.AllocHGlobal((int)bufferSize);
-        try
-        {
-            if (GetExtendedTcpTable(buffer, ref bufferSize, true, addressFamily, TcpTableOwnerPidListener, 0) != 0)
-            {
-                return;
-            }
-
-            uint rowCount = (uint)Marshal.ReadInt32(buffer);
-            int rowSize = isV6 ? Marshal.SizeOf<MibTcp6RowOwnerPid>() : Marshal.SizeOf<MibTcpRowOwnerPid>();
-            IntPtr rowPtr = IntPtr.Add(buffer, sizeof(uint)); // rows follow dwNumEntries
-
-            for (uint i = 0; i < rowCount; i++, rowPtr = IntPtr.Add(rowPtr, rowSize))
-            {
-                uint state;
-                uint rawPort;
-                int pid;
-                string address;
-
-                if (isV6)
-                {
-                    var row = Marshal.PtrToStructure<MibTcp6RowOwnerPid>(rowPtr);
-                    state = row.State;
-                    rawPort = row.LocalPort;
-                    pid = (int)row.OwningPid;
-                    address = row.LocalAddr != null ? new IPAddress(row.LocalAddr).ToString() : "::";
-                }
-                else
-                {
-                    var row = Marshal.PtrToStructure<MibTcpRowOwnerPid>(rowPtr);
-                    state = row.State;
-                    rawPort = row.LocalPort;
-                    pid = (int)row.OwningPid;
-                    address = new IPAddress(BitConverter.GetBytes(row.LocalAddr)).ToString();
-                }
-
-                if (state != MibTcpStateListen) continue;
-
-                // Port DWORD holds the port in network byte order in its low 16 bits.
-                int port = ((int)rawPort & 0xFF) << 8 | ((int)rawPort >> 8 & 0xFF);
-                results.Add(new ListenerOwner(port, address, pid));
-            }
-        }
-        finally
-        {
-            Marshal.FreeHGlobal(buffer);
-        }
     }
 
     private static List<ListenerOwner> GetListenersFromIpGlobalProperties()
@@ -185,10 +138,11 @@ public class SystemPortScanner : IPortScanner
         5001 => "ASP.NET Core HTTPS",
         5173 => "Vite / Vue / Svelte",
         7000 or 7001 or 7100 => "ASP.NET Core Kestrel",
-        8000 => "FastAPI / Django / PHP",
+        8000 => "FastAPI / Django / Laravel serve",
         8080 => "Java Spring / Tomcat / HTTP Alternate",
         8081 or 8888 => "Web Application Alternate",
         9000 => "PHP-FPM / SonarQube",
+        3306 => "MySQL / MariaDB",
         _ => "Local Web Service"
     };
 }

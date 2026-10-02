@@ -55,6 +55,7 @@ Both **Cloudflare** (`cloudflared.exe`) and **Ngrok** (`ngrok.exe`) are **direct
     - **Vite / Vue / Svelte** (Port `5173`)
     - **ASP.NET Core HTTP** (Port `5000`)
     - **FastAPI / Django** (Port `8000`)
+    - **Laravel** (Port `8000` — `php artisan serve`)
     - **Custom Port Entry**
 - 🎨 **Modern Cyber Terminal Aesthetics**:
   - Neon cyan, orange, and purple Spectre.Console theme.
@@ -85,7 +86,9 @@ Cloudflare Tunnel/
 │   ├── CloudflareTunnelSession.cs   # cloudflared process manager and URL parser
 │   ├── NgrokTunnelProvider.cs       # Ngrok engine resolution and authtoken setup
 │   ├── NgrokTunnelSession.cs        # ngrok process manager and local API reader
-│   ├── SystemPortScanner.cs         # Win32 IPGlobalProperties TCP port scanner
+│   ├── ProcessTunnelSession.cs      # Shared process lifecycle base for tunnel sessions
+│   ├── TunnelUrlParser.cs           # URL detectors for engine output and ngrok API
+│   ├── SystemPortScanner.cs         # Win32 GetExtendedTcpTable scanner with PID lookup
 │   └── ConsoleWindowHelper.cs       # Win32 User32/Shell32 window centering, icon & styles
 ├── Presentation/
 │   ├── ConsoleTheme.cs              # Spectre.Console color scheme, Figlet banner & info card
@@ -95,6 +98,9 @@ Cloudflare Tunnel/
 ├── icon.png                         # High-resolution application brand artwork
 ├── Program.cs                       # Application entry point and interactive loop
 └── Cloudflare Tunnel.csproj         # .NET 10 project definition with embedded binaries
+
+Cloudflare Tunnel.Tests/             # xunit tests: URL parsing, tunnel selection, args
+.github/workflows/ci.yml             # Windows CI: restore → build → test
 ```
 
 ---
@@ -163,7 +169,7 @@ The resulting `publish\win-x64\Cloudflare Tunnel.exe` contains:
 
 3. **Choose Tunnel Engine**:
    - **Cloudflare**: No registration required. Connects immediately and provisions a `*.trycloudflare.com` edge URL.
-   - **Ngrok**: First-time users will be prompted for an Ngrok authtoken (obtainable free from [dashboard.ngrok.com](https://dashboard.ngrok.com)). The token is stored by the ngrok agent itself in its standard `ngrok.yml` config file for all future sessions.
+   - **Ngrok**: First-time users will be prompted for an Ngrok authtoken (obtainable free from [dashboard.ngrok.com]); input is masked. The token is stored by the ngrok agent itself in `ngrok.yml` — auto-detected on later runs so you won't be re-prompted. Optionally enter a reserved domain (e.g. `myapp.ngrok-free.dev`) for a stable URL.
 
 4. **Monitor Active Tunnel**:
    - The Public HTTPS URL is displayed and copied to your clipboard.
