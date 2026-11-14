@@ -35,6 +35,10 @@ public sealed class NgrokTunnelSession : ProcessTunnelSession
         if (!string.IsNullOrWhiteSpace(options.CustomSubdomain))
         {
             string domain = options.CustomSubdomain.Trim().TrimEnd('/');
+            if (domain.Any(char.IsWhiteSpace))
+            {
+                throw new ArgumentException("Custom domain cannot contain whitespace.", nameof(options));
+            }
             if (!domain.Contains("://", StringComparison.Ordinal))
             {
                 domain = "https://" + domain;

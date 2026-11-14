@@ -14,6 +14,7 @@ public abstract class ProcessTunnelSession : ITunnelSession
     private readonly TaskCompletionSource<bool> _exitTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly object _urlLock = new();
     private volatile bool _started;
+    private volatile bool _stopping;
     private bool _disposed;
 
     public abstract TunnelProviderType Provider { get; }
@@ -37,13 +38,14 @@ public abstract class ProcessTunnelSession : ITunnelSession
 
         _process.Exited += (_, _) =>
         {
-            Status = _process.ExitCode == 0 ? TunnelStatus.Stopped : TunnelStatus.Faulted;
+            int exitCode = 0;
+            try { exitCode = _process.ExitCode; } catch { }
+            Status = (_stopping || exitCode == 0) ? TunnelStatus.Stopped : TunnelStatus.Faulted;
             StatusChanged?.Invoke(Status);
             _exitTcs.TrySetResult(true);
         };
 
         AppDomain.CurrentDomain.ProcessExit += CurrentDomain_ProcessExit;
-        Console.CancelKeyPress += Console_CancelKeyPress;
     }
 
     /// <summary>Called with each stdout/stderr line; parse the public URL here.</summary>
@@ -77,6 +79,7 @@ public abstract class ProcessTunnelSession : ITunnelSession
             if (PublicUrl != null) return;
             PublicUrl = uri;
             Status = TunnelStatus.Online;
+            StatusChanged?.Invoke(Status);
             PublicUrlAssigned?.Invoke(uri);
         }
     }
@@ -97,12 +100,7 @@ public abstract class ProcessTunnelSession : ITunnelSession
 
     private void CurrentDomain_ProcessExit(object? sender, EventArgs e)
     {
-        KillProcessSafe();
-    }
-
-    private void Console_CancelKeyPress(object? sender, ConsoleCancelEventArgs e)
-    {
-        e.Cancel = true; // Intercept Ctrl+C so host app stays alive and returns to menu
+        _stopping = true;
         KillProcessSafe();
     }
 
@@ -123,27 +121,21 @@ public abstract class ProcessTunnelSession : ITunnelSession
 
     public async Task StopAsync(CancellationToken cancellationToken = default)
     {
-        if (!ProcessIsRunning()) return;
+        _stopping = true;
+        if (ProcessIsRunning())
+        {
+            try { _process.CancelOutputRead(); } catch { }
+            try { _process.CancelErrorRead(); } catch { }
 
-        try
-        {
-            _process.CancelOutputRead();
+            try
+            {
+                _process.Kill(entireProcessTree: true);
+                using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+                await _process.WaitForExitAsync(linked.Token);
+            }
+            catch { }
         }
-        catch { }
-        try
-        {
-            _process.CancelErrorRead();
-        }
-        catch { }
-
-        try
-        {
-            _process.Kill(entireProcessTree: true);
-            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
-            await _process.WaitForExitAsync(linked.Token);
-        }
-        catch { }
 
         Status = TunnelStatus.Stopped;
         StatusChanged?.Invoke(Status);
@@ -155,7 +147,6 @@ public abstract class ProcessTunnelSession : ITunnelSession
         _disposed = true;
 
         AppDomain.CurrentDomain.ProcessExit -= CurrentDomain_ProcessExit;
-        Console.CancelKeyPress -= Console_CancelKeyPress;
 
         try
         {

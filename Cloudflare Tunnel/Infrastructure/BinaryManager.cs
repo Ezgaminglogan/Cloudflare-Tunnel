@@ -89,6 +89,13 @@ public class BinaryManager : IBinaryManager
         return stream?.Length;
     }
 
+    internal static bool IsReusableBinary(IBinaryManager manager, string existingPath, string embeddedResourceName)
+    {
+        bool isManagedByUs = existingPath.StartsWith(manager.GetBinaryDirectory(), StringComparison.OrdinalIgnoreCase);
+        long? embeddedLength = GetEmbeddedResourceLength(embeddedResourceName);
+        return !isManagedByUs || embeddedLength == null || new FileInfo(existingPath).Length == embeddedLength;
+    }
+
     public async Task<string> ExtractEmbeddedBinaryAsync(
         string resourceName,
         string targetFileName,
@@ -139,12 +146,41 @@ public class BinaryManager : IBinaryManager
         }
 
         // Unique temp name so concurrent app instances can't clobber each other.
+        return await WriteToTargetWithProgressAsync(stream, targetPath, totalBytes, progress, ct);
+    }
+
+    public async Task<string> DownloadBinaryAsync(
+        Uri url,
+        string targetFileName,
+        IProgress<(long bytesProcessed, long totalBytes, double speedBytesPerSec)>? progress = null,
+        CancellationToken ct = default)
+    {
+        targetFileName = EnsureExecutableExtension(targetFileName);
+        string targetPath = Path.Combine(_storageDir, targetFileName);
+
+        using var client = new HttpClient();
+        using var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+        response.EnsureSuccessStatusCode();
+
+        long totalBytes = response.Content.Headers.ContentLength ?? -1;
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+
+        return await WriteToTargetWithProgressAsync(stream, targetPath, totalBytes, progress, ct);
+    }
+
+    private static async Task<string> WriteToTargetWithProgressAsync(
+        Stream stream,
+        string targetPath,
+        long totalBytes,
+        IProgress<(long bytesProcessed, long totalBytes, double speedBytesPerSec)>? progress,
+        CancellationToken ct)
+    {
         string tempPath = targetPath + "." + Path.GetRandomFileName() + ".tmp";
         try
         {
             var sw = Stopwatch.StartNew();
             long bytesProcessed = 0;
-            byte[] buffer = new byte[128 * 1024]; // 128 KB buffer
+            byte[] buffer = new byte[128 * 1024];
 
             await using (var dest = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, buffer.Length, useAsync: true))
             {
@@ -156,55 +192,6 @@ public class BinaryManager : IBinaryManager
                     double speed = sw.Elapsed.TotalSeconds > 0.05 ? bytesProcessed / sw.Elapsed.TotalSeconds : 0;
                     progress?.Report((bytesProcessed, totalBytes, speed));
                 }
-            }
-
-            if (File.Exists(targetPath))
-            {
-                try { File.Delete(targetPath); } catch { }
-            }
-
-            File.Move(tempPath, targetPath);
-            return targetPath;
-        }
-        finally
-        {
-            try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
-        }
-    }
-
-    public async Task<string> DownloadBinaryAsync(
-        Uri url,
-        string targetFileName,
-        IProgress<(long bytesProcessed, long totalBytes, double speedBytesPerSec)>? progress = null,
-        CancellationToken ct = default)
-    {
-        targetFileName = EnsureExecutableExtension(targetFileName);
-
-        string targetPath = Path.Combine(_storageDir, targetFileName);
-        string tempPath = targetPath + "." + Path.GetRandomFileName() + ".download";
-
-        try
-        {
-            using var client = new HttpClient();
-            using var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
-            response.EnsureSuccessStatusCode();
-
-            long totalBytes = response.Content.Headers.ContentLength ?? -1;
-
-            await using var stream = await response.Content.ReadAsStreamAsync(ct);
-            await using var dest = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 128 * 1024, useAsync: true);
-
-            var sw = Stopwatch.StartNew();
-            long bytesProcessed = 0;
-            byte[] buffer = new byte[128 * 1024];
-
-            int bytesRead;
-            while ((bytesRead = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), ct)) > 0)
-            {
-                await dest.WriteAsync(buffer.AsMemory(0, bytesRead), ct);
-                bytesProcessed += bytesRead;
-                double speed = sw.Elapsed.TotalSeconds > 0.05 ? bytesProcessed / sw.Elapsed.TotalSeconds : 0;
-                progress?.Report((bytesProcessed, totalBytes, speed));
             }
 
             if (File.Exists(targetPath))

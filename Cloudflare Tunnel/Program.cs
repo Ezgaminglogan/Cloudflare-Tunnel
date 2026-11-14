@@ -13,6 +13,8 @@ catch { }
 
 try { Console.Title = $"Cloudflare Tunnel Manager | Developed by {ConsoleTheme.DeveloperAttribution}"; } catch { }
 ConsoleWindowHelper.CenterAndConfigureWindow();
+AppUpdater.CleanupOldUpdateBinary();
+_ = AppUpdater.CheckOnStartupAsync();
 
 var binaryManager = new BinaryManager();
 var portScanner = new SystemPortScanner();
@@ -23,14 +25,7 @@ while (true)
 {
     try
     {
-        if (!Console.IsOutputRedirected)
-        {
-            try { AnsiConsole.Clear(); } catch { }
-        }
-
-        ConsoleTheme.RenderBanner();
-
-        // 1. Select Port or Project
+        // 1. Select Port or Project (renders banner cleanly on each menu view)
         int? selectedPort = await ConsoleViews.PromptPortSelectionAsync(portScanner);
         if (selectedPort == null)
         {
@@ -40,7 +35,7 @@ while (true)
         AnsiConsole.WriteLine();
 
         // 2. Select Tunnel Provider (Cloudflare or Ngrok), or go back
-        var providerType = ConsoleViews.PromptProvider();
+        var providerType = ConsoleViews.PromptProvider(selectedPort.Value);
         if (providerType == null)
         {
             continue;

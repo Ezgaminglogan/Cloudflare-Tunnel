@@ -27,7 +27,9 @@ internal sealed class CloudflareUrlDetector
 
         if (!match.Success)
         {
-            _recentLines.Enqueue(line);
+            int pipe = line.IndexOf('|');
+            string fragment = pipe >= 0 && !string.IsNullOrWhiteSpace(line[(pipe + 1)..]) ? line[(pipe + 1)..] : line;
+            _recentLines.Enqueue(fragment);
             if (_recentLines.Count > 4) _recentLines.Dequeue();
             match = UrlRegex.Match(NoiseRegex.Replace(string.Concat(_recentLines), ""));
         }
@@ -92,7 +94,7 @@ internal static class NgrokUrlParser
                 config.TryGetProperty("addr", out var addrProp))
             {
                 string? addr = addrProp.GetString();
-                if (addr != null && addr.Contains($":{localPort}"))
+                if (addr != null && HasPort(addr, localPort))
                 {
                     url = parsed;
                     return true;
@@ -105,5 +107,14 @@ internal static class NgrokUrlParser
 
         url = fallback;
         return url != null;
+    }
+
+    private static bool HasPort(string addr, int port)
+    {
+        string token = $":{port}";
+        int idx = addr.IndexOf(token, StringComparison.Ordinal);
+        if (idx < 0) return false;
+        int end = idx + token.Length;
+        return end == addr.Length || !char.IsAsciiDigit(addr[end]);
     }
 }

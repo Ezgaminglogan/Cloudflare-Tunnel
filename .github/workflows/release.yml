@@ -1,0 +1,51 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions: {}
+
+jobs:
+  release:
+    name: Build, Test & Publish Release
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore & Test
+        run: dotnet test "Cloudflare Tunnel.slnx" --configuration Release
+
+      - name: Publish Single-File Executable (win-x64)
+        run: |
+          dotnet publish "Cloudflare Tunnel/Cloudflare Tunnel.csproj" `
+            --configuration Release `
+            --runtime win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:EnableCompressionInSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:DebugType=none `
+            --output publish/win-x64
+
+      - name: Package & Create GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          $exePath = "publish/win-x64/Cloudflare Tunnel.exe"
+          $zipName = "Cloudflare-Tunnel-$($env:TAG)-win-x64.zip"
+          Compress-Archive -Path $exePath -DestinationPath $zipName -Force
+          gh release create "$env:TAG" $exePath $zipName --title "Cloudflare Tunnel $($env:TAG)" --generate-notes

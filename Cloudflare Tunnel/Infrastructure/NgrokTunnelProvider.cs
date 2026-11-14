@@ -25,22 +25,16 @@ public class NgrokTunnelProvider : ITunnelProvider
     {
         if (_cachedBinaryPath != null && File.Exists(_cachedBinaryPath))
         {
+            progress?.Report((1, 1, 0));
             return _cachedBinaryPath;
         }
 
         string? existing = _binaryManager.FindExistingExecutable("ngrok");
-        if (existing != null)
+        if (existing != null && BinaryManager.IsReusableBinary(_binaryManager, existing, "ngrok.ngrok.exe"))
         {
-            // Trust user-managed installs (PATH / app dir); refresh our own cache
-            // copy when it no longer matches the embedded engine.
-            bool isManagedByUs = existing.StartsWith(_binaryManager.GetBinaryDirectory(), StringComparison.OrdinalIgnoreCase);
-            long? embeddedLength = BinaryManager.GetEmbeddedResourceLength("ngrok.ngrok.exe");
-            if (!isManagedByUs || embeddedLength == null || new FileInfo(existing).Length == embeddedLength)
-            {
-                _cachedBinaryPath = existing;
-                progress?.Report((1, 1, 0));
-                return existing;
-            }
+            _cachedBinaryPath = existing;
+            progress?.Report((1, 1, 0));
+            return existing;
         }
 
         // 2. Extract from Embedded Resource
@@ -102,7 +96,7 @@ public class NgrokTunnelProvider : ITunnelProvider
         {
             try
             {
-                if (File.Exists(path) && File.ReadAllText(path).Contains("authtoken", StringComparison.OrdinalIgnoreCase))
+                if (File.Exists(path) && HasConfiguredAuthToken(File.ReadAllText(path)))
                 {
                     return path;
                 }
@@ -111,6 +105,25 @@ public class NgrokTunnelProvider : ITunnelProvider
         }
 
         return null;
+    }
+
+    internal static bool HasConfiguredAuthToken(string yaml)
+    {
+        foreach (string rawLine in yaml.Split('\n'))
+        {
+            string line = rawLine.Trim();
+            if (line.StartsWith('#') || !line.StartsWith("authtoken:", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            string value = line["authtoken:".Length..].Trim().Trim('\'', '"');
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     public async Task<ITunnelSession> StartTunnelAsync(TunnelOptions options, CancellationToken ct = default)
@@ -132,12 +145,14 @@ public class NgrokTunnelProvider : ITunnelProvider
         var startInfo = new ProcessStartInfo
         {
             FileName = binaryPath,
-            Arguments = $"config add-authtoken {authToken}",
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true
         };
+        startInfo.ArgumentList.Add("config");
+        startInfo.ArgumentList.Add("add-authtoken");
+        startInfo.ArgumentList.Add(authToken.Trim());
 
         using var proc = Process.Start(startInfo)
             ?? throw new InvalidOperationException("Failed to launch ngrok to configure the authtoken.");

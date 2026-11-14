@@ -55,7 +55,7 @@ public static class QrCodeRenderer
         {
             Header = new PanelHeader($"[bold gold1]{title}[/]", Justify.Center),
             Border = BoxBorder.Rounded,
-            BorderStyle = new Style(Color.FromHex("F38020")),
+            BorderStyle = new Style(ConsoleTheme.PrimaryOrange),
             Padding = new Padding(1, 0, 1, 0),
             Width = totalWidth + 4 // 2 border lines + 2 padding spaces
         };

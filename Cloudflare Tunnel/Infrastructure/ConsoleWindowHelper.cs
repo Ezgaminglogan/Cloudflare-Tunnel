@@ -27,9 +27,14 @@ public static class ConsoleWindowHelper
     private const uint WM_SETICON = 0x0080;
     private const int ICON_SMALL = 0;
     private const int ICON_BIG = 1;
+    private const uint MB_OK = 0x00000000;
+    private const uint MB_ICONINFORMATION = 0x00000040;
 
     [DllImport("shell32.dll", CharSet = CharSet.Auto)]
     private static extern uint ExtractIconEx(string szFileName, int nIconIndex, out IntPtr phiconLarge, out IntPtr phiconSmall, uint nIcons);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int MessageBoxW(IntPtr hWnd, string lpText, string lpCaption, uint uType);
 
     [DllImport("user32.dll")]
     private static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
@@ -126,30 +131,18 @@ public static class ConsoleWindowHelper
         }
     }
 
-    /// <summary>
-    /// Disables the Maximize button and window resize frame on Windows Console.
-    /// </summary>
-    public static void DisableMaximizeButton()
+    public static void ShowInfoMessageBox(string text, string caption)
     {
-        if (!OperatingSystem.IsWindows()) return;
+        if (!OperatingSystem.IsWindows() || Console.IsInputRedirected || Console.IsOutputRedirected)
+        {
+            return;
+        }
 
         try
         {
-            IntPtr hWnd = GetTargetWindowHandle();
-            if (hWnd != IntPtr.Zero)
-            {
-                DisableMaximize(hWnd);
-            }
+            MessageBoxW(GetTargetWindowHandle(), text, caption, MB_OK | MB_ICONINFORMATION);
         }
         catch { }
-    }
-
-    /// <summary>
-    /// Centers the console/terminal window on the current monitor's working area (accounting for taskbar).
-    /// </summary>
-    public static void CenterWindowOnScreen()
-    {
-        CenterAndConfigureWindow();
     }
 
     private static IntPtr GetTargetWindowHandle()

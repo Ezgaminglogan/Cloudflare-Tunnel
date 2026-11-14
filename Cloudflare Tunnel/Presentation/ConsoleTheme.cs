@@ -1,3 +1,4 @@
+using Cloudflare_Tunnel.Infrastructure;
 using Spectre.Console;
 
 namespace Cloudflare_Tunnel.Presentation;
@@ -19,7 +20,7 @@ public static class ConsoleTheme
         {
             if (!Console.IsOutputRedirected)
             {
-                Console.Clear();
+                AnsiConsole.Clear();
             }
         }
         catch { }
@@ -52,7 +53,7 @@ public static class ConsoleTheme
         );
 
         headerGrid.AddRow(
-            new Markup($"[bold white on #F38020] DEVELOPED BY [/]  [bold gold1]{DeveloperAttribution}[/]   [dim grey]•[/]   [grey]Release v2.0.0 (Ready)[/]")
+            new Markup($"[bold white on #F38020] DEVELOPED BY [/]  [bold gold1]{DeveloperAttribution}[/]   [dim grey]•[/]   [grey]Release v{AppUpdater.CurrentVersion} (Ready)[/]")
         );
 
         int panelWidth = 96;

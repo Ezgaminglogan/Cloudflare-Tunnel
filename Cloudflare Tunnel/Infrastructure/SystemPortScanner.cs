@@ -8,7 +8,7 @@ namespace Cloudflare_Tunnel.Infrastructure;
 
 public class SystemPortScanner : IPortScanner
 {
-    private sealed record ListenerOwner(int Port, string Address, int Pid);
+    internal readonly record struct ListenerOwner(int Port, string Address, int Pid);
 
     public IReadOnlyList<ListeningPortInfo> GetActiveListeners(int minPort = 1000, int maxPort = 65000)
     {
@@ -58,7 +58,7 @@ public class SystemPortScanner : IPortScanner
     }
 
     /// <summary>
-    /// Enumerates TCP listeners with owning PIDs by parsing `netstat -ano -p tcp`
+    /// Enumerates TCP listeners (IPv4 and IPv6) with owning PIDs by parsing `netstat -ano`
     /// (the OS's own output — no fragile struct layouts). Sample row:
     /// "  TCP    0.0.0.0:49664    0.0.0.0:0    LISTENING    920"
     /// </summary>
@@ -69,7 +69,7 @@ public class SystemPortScanner : IPortScanner
         using var proc = Process.Start(new ProcessStartInfo
         {
             FileName = "netstat",
-            Arguments = "-ano -p tcp",
+            Arguments = "-ano",
             RedirectStandardOutput = true,
             UseShellExecute = false,
             CreateNoWindow = true
@@ -79,6 +79,12 @@ public class SystemPortScanner : IPortScanner
         string output = proc.StandardOutput.ReadToEnd();
         proc.WaitForExit(5000);
 
+        return ParseNetstatListeners(output);
+    }
+
+    internal static List<ListenerOwner> ParseNetstatListeners(string output)
+    {
+        var owners = new List<ListenerOwner>();
         foreach (var line in output.Split('\n'))
         {
             var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
@@ -120,7 +126,7 @@ public class SystemPortScanner : IPortScanner
         {
             using var client = new TcpClient();
             using var cts = new CancellationTokenSource(timeout);
-            await client.ConnectAsync(IPAddress.Loopback, port, cts.Token);
+            await client.ConnectAsync("localhost", port, cts.Token);
             return client.Connected;
         }
         catch
