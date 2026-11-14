@@ -285,4 +285,27 @@ public class AppUpdaterTests
         Assert.Contains("Added auto-updater with MessageBox", release.ReleaseNotes);
         Assert.Contains("Fixed IPv6 port scanner", release.ReleaseNotes);
     }
+
+    [Fact]
+    public void StagesUpdateInWritableLocalAppDataInsteadOfProtectedExeDir()
+    {
+        string stagingPath = AppUpdater.GetUpdateStagingPath("v2.1.0");
+        string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+
+        Assert.StartsWith(localAppData, stagingPath, StringComparison.OrdinalIgnoreCase);
+        Assert.EndsWith(".exe", stagingPath, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BuildElevatedSwapArgumentsQuotesPathsSafely()
+    {
+        string args = AppUpdater.BuildElevatedSwapCommand(
+            @"C:\Cloudflare Tunnel.exe",
+            @"C:\Cloudflare Tunnel.exe.old",
+            @"C:\Users\Logan\AppData\Local\UniversalTunnel\updates\Cloudflare-Tunnel-v2.1.0.exe");
+
+        Assert.Contains("\"C:\\Cloudflare Tunnel.exe\"", args);
+        Assert.Contains("\"C:\\Cloudflare Tunnel.exe.old\"", args);
+        Assert.Contains("move /y", args);
+    }
 }

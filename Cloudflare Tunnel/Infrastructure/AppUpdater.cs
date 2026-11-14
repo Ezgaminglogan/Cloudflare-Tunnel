@@ -12,8 +12,26 @@ public sealed record ReleaseInfo(
 
 public static class AppUpdater
 {
-    public const string CurrentVersion = "2.1.0";
+    public const string CurrentVersion = "2.1.1";
     public const string LatestReleaseApiUrl = "https://api.github.com/repos/Ezgaminglogan/Cloudflare-Tunnel/releases/latest";
+
+    internal static string GetUpdateStagingPath(string tagName)
+    {
+        string updatesDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "UniversalTunnel",
+            "updates");
+
+        Directory.CreateDirectory(updatesDir);
+
+        string safeTag = string.Concat(tagName.Trim().Where(c => char.IsLetterOrDigit(c) || c is '.' or '-' or '_'));
+        if (string.IsNullOrEmpty(safeTag)) safeTag = "latest";
+
+        return Path.Combine(updatesDir, $"Cloudflare-Tunnel-{safeTag}.exe");
+    }
+
+    internal static string BuildElevatedSwapCommand(string exePath, string backupOldPath, string stagedNewPath)
+        => $"/c move /y \"{exePath}\" \"{backupOldPath}\" >nul 2>&1 & move /y \"{stagedNewPath}\" \"{exePath}\" >nul 2>&1";
 
     internal static bool IsNewerVersion(string currentVersion, string latestTag)
     {
@@ -151,7 +169,10 @@ public static class AppUpdater
             !Path.GetFileName(exePath).Equals("dotnet.exe", StringComparison.OrdinalIgnoreCase) &&
             !string.IsNullOrWhiteSpace(release.ExeDownloadUrl))
         {
-            string tempNewPath = exePath + ".new";
+            // Stage the download in %LOCALAPPDATA%\UniversalTunnel\updates so we never fail
+            // with UnauthorizedAccessException when the app lives in C:\ or Program Files.
+            string stagedNewPath = GetUpdateStagingPath(release.TagName);
+            string tempDownloadPath = stagedNewPath + "." + Path.GetRandomFileName() + ".tmp";
             string backupOldPath = exePath + ".old";
 
             try
@@ -165,7 +186,7 @@ public static class AppUpdater
                 long totalBytes = response.Content.Headers.ContentLength ?? -1;
                 await using var stream = await response.Content.ReadAsStreamAsync(ct);
 
-                await using (var dest = new FileStream(tempNewPath, FileMode.Create, FileAccess.Write, FileShare.None, 128 * 1024, useAsync: true))
+                await using (var dest = new FileStream(tempDownloadPath, FileMode.Create, FileAccess.Write, FileShare.None, 128 * 1024, useAsync: true))
                 {
                     var sw = Stopwatch.StartNew();
                     long bytesProcessed = 0;
@@ -180,19 +201,51 @@ public static class AppUpdater
                     }
                 }
 
-                // Windows allows renaming a currently running executable on NTFS
+                File.Move(tempDownloadPath, stagedNewPath, overwrite: true);
+            }
+            finally
+            {
+                try { if (File.Exists(tempDownloadPath)) File.Delete(tempDownloadPath); } catch { }
+            }
+
+            // 1. Try direct in-place swap (succeeds for user-writable folders)
+            try
+            {
                 if (File.Exists(backupOldPath))
                 {
                     try { File.Delete(backupOldPath); } catch { }
                 }
-                File.Move(exePath, backupOldPath);
-                File.Move(tempNewPath, exePath);
-
+                File.Move(exePath, backupOldPath, overwrite: true);
+                File.Move(stagedNewPath, exePath, overwrite: true);
                 return (true, $"Updated executable to {release.TagName}. Restart the application to run the new version.");
             }
-            finally
+            catch (UnauthorizedAccessException)
             {
-                try { if (File.Exists(tempNewPath)) File.Delete(tempNewPath); } catch { }
+                // 2. Exe is in a UAC-protected folder (e.g. C:\ or C:\Program Files):
+                // request Administrator elevation via UAC to perform the swap.
+                if ( await TryElevatedSwapAsync(exePath, backupOldPath, stagedNewPath, ct))
+                {
+                    return (true, $"Updated executable to {release.TagName} (with Administrator elevation). Restart the application to run the new version.");
+                }
+
+                // 3. UAC prompt was declined: keep the downloaded binary in %LOCALAPPDATA% and reveal it in Explorer.
+                try
+                {
+                    Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{stagedNewPath}\"") { UseShellExecute = true });
+                }
+                catch { }
+
+                return (false, $"Downloaded {release.TagName} to {stagedNewPath}. Run as Administrator to overwrite {exePath}.");
+            }
+            catch (IOException)
+            {
+                try
+                {
+                    Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{stagedNewPath}\"") { UseShellExecute = true });
+                }
+                catch { }
+
+                return (false, $"Downloaded {release.TagName} to {stagedNewPath}. Close running instances to replace {exePath}.");
             }
         }
 
@@ -203,5 +256,30 @@ public static class AppUpdater
         catch { }
 
         return (false, $"Opened GitHub Release {release.TagName} in your browser.");
+    }
+
+    private static async Task<bool> TryElevatedSwapAsync(string exePath, string backupOldPath, string stagedNewPath, CancellationToken ct)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                Arguments = BuildElevatedSwapCommand(exePath, backupOldPath, stagedNewPath),
+                UseShellExecute = true,
+                Verb = "runas",
+                WindowStyle = ProcessWindowStyle.Hidden
+            };
+
+            using var proc = Process.Start(psi);
+            if (proc == null) return false;
+
+            await proc.WaitForExitAsync(ct);
+            return !File.Exists(stagedNewPath) && File.Exists(exePath);
+        }
+        catch
+        {
+            return false;
+        }
     }
 }
