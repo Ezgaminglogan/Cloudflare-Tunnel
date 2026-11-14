@@ -83,9 +83,11 @@ public static class ConsoleViews
             }
             int scanNumber = number++;
             int customNumber = number++;
+            int manualNumber = number++;
             int updateNumber = number++;
             table.AddRow($"[bold gold1]{scanNumber}[/]", "[cyan][[SCAN]][/]", "—", "[grey]Scan active listening ports on this PC[/]");
             table.AddRow($"[bold gold1]{customNumber}[/]", "[yellow][[CUSTOM]][/]", "—", "[grey]Enter custom port number[/]");
+            table.AddRow($"[bold gold1]{manualNumber}[/]", "[#F38020][[MANUAL]][/]", "Guide", "[grey]How to use, engine comparison & shortcuts[/]");
             table.AddRow($"[bold gold1]{updateNumber}[/]", "[green][[UPDATE]][/]", $"v{AppUpdater.CurrentVersion}", "[grey]Check for updates & install latest release[/]");
             table.AddRow("[dim grey]0[/]", "[red][[EXIT]][/]", "—", "[grey]Exit[/]");
             WriteCentered(table);
@@ -108,6 +110,12 @@ public static class ConsoleViews
                 continue;
             }
 
+            if (choice == manualNumber)
+            {
+                await ShowUserManualAsync();
+                continue;
+            }
+
             if (choice == updateNumber)
             {
                 await CheckAndInstallUpdateAsync();
@@ -116,6 +124,81 @@ public static class ConsoleViews
 
             return Presets[choice - 1].Port;
         }
+    }
+
+    public static async Task ShowUserManualAsync()
+    {
+        ConsoleTheme.RenderBanner();
+        int width = ConsoleTheme.GetStandardPanelWidth();
+
+        WriteCentered(new Markup("[bold white]OPERATOR MANUAL & QUICK-START GUIDE[/]"));
+        AnsiConsole.WriteLine();
+
+        // 1. Quick-Start Workflow (Tutorial)
+        var workflowGrid = new Grid().AddColumn();
+        workflowGrid.AddRow(new Markup(
+            "[bold gold1]1.[/] [bold white]Select Local Port[/] — Pick a framework preset ([cyan]3000[/], [cyan]5173[/], [cyan]5000[/], [cyan]8000[/]), run [cyan][[SCAN]][/] to auto-detect listening TCP/IPv4/IPv6 servers, or choose [yellow][[CUSTOM]][/] for any port."));
+        workflowGrid.AddRow(new Markup(
+            "[bold gold1]2.[/] [bold white]Choose Tunnel Engine[/] — Pick [bold #F38020]Cloudflare[/] for instant zero-account links, or [bold #00D2D3]Ngrok[/] for authtoken-authenticated or custom-domain tunnels."));
+        workflowGrid.AddRow(new Markup(
+            "[bold gold1]3.[/] [bold white]Share or Scan[/] — Your public [bold #10B981]https://[/] URL is copied to the clipboard automatically and rendered as a compact QR code for mobile testing."));
+
+        WriteCentered(new Panel(workflowGrid)
+        {
+            Header = new PanelHeader("[bold #F38020]1 · Quick-Start Workflow (3 Steps)[/]", Justify.Left),
+            Border = BoxBorder.Rounded,
+            BorderStyle = new Style(ConsoleTheme.PrimaryOrange),
+            Padding = new Padding(2, 0, 2, 0),
+            Width = width
+        });
+
+        // 2. Engine Comparison (Explanation / Decision Matrix)
+        var engineTable = new Table()
+            .Border(TableBorder.Rounded)
+            .BorderColor(ConsoleTheme.DarkBorder)
+            .Width(width)
+            .AddColumn(new TableColumn("[bold white]Capability[/]").Width(22))
+            .AddColumn(new TableColumn("[bold #F38020]Cloudflare Quick Tunnel[/]"))
+            .AddColumn(new TableColumn("[bold #00D2D3]Ngrok Edge Tunnel[/]"));
+
+        engineTable.AddRow("[grey]Account / Token[/]", "[#10B981]None required (Zero-Config)[/]", "[white]Free authtoken (saved in ngrok.yml)[/]");
+        engineTable.AddRow("[grey]Public Domain[/]", "[white]Random *.trycloudflare.com[/]", "[white]Random *.ngrok-free.app or Custom Domain[/]");
+        engineTable.AddRow("[grey]Local Inspector[/]", "[dim grey]Console live stream[/]", "[white]Console stream + http://127.0.0.1:4040[/]");
+        engineTable.AddRow("[grey]Best For[/]", "[white]Instant demos, webhooks, mobile QA[/]", "[white]Stable reserved domains & payload replay[/]");
+
+        WriteCentered(engineTable);
+
+        // 3. Hotkeys & Troubleshooting Reference
+        var referenceGrid = new Grid()
+            .AddColumn(new GridColumn().Width(width / 2 - 3))
+            .AddColumn(new GridColumn().Width(width / 2 - 3));
+
+        var keysMarkup = new Markup(
+            "[bold #00D2D3]Live Dashboard Shortcuts[/]\n" +
+            "[bold gold1][[O]][/]        Open public URL in default browser\n" +
+            "[bold gold1][[C]][/]        Re-copy public HTTPS URL to clipboard\n" +
+            "[bold gold1][[Q]] / [[Esc]][/] Stop tunnel & return to main menu\n" +
+            "[bold gold1][[Ctrl+C]][/]   Safe interrupt (never crashes console)\n" +
+            "[bold gold1][[0]][/]        Go back / Exit from any prompt");
+
+        var tipsMarkup = new Markup(
+            "[bold #F38020]Common Troubleshooting[/]\n" +
+            "[white]• 502 Bad Gateway:[/] Start your local web server on the selected port; the tunnel stays online while you restart it.\n" +
+            "[white]• Host Header Check:[/] For Vite/Webpack dev servers, pass [cyan]--host[/] if external requests are blocked.\n" +
+            "[white]• Self-Update:[/] Use [green][[UPDATE]][/] to fetch new GitHub Releases in place.");
+
+        referenceGrid.AddRow(keysMarkup, tipsMarkup);
+
+        WriteCentered(new Panel(referenceGrid)
+        {
+            Header = new PanelHeader("[bold #00D2D3]2 · Controls & Troubleshooting Reference[/]", Justify.Left),
+            Border = BoxBorder.Rounded,
+            BorderStyle = new Style(ConsoleTheme.DarkBorder),
+            Padding = new Padding(2, 0, 2, 0),
+            Width = width
+        });
+
+        await WaitForKeyIfInteractiveAsync();
     }
 
     public static async Task CheckAndInstallUpdateAsync()

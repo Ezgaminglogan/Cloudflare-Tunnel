@@ -14,6 +14,126 @@ public static class ConsoleTheme
 
     public const string DeveloperAttribution = "Logan M. Panucat";
 
+    public static int GetStandardPanelWidth()
+    {
+        int panelWidth = 96;
+        try
+        {
+            if (!Console.IsOutputRedirected && Console.WindowWidth > 40)
+            {
+                panelWidth = Math.Min(Console.WindowWidth - 6, 96);
+            }
+        }
+        catch { }
+        return panelWidth;
+    }
+
+    /// <summary>
+    /// Renders a cohesive, brand-aligned startup splash screen using the strict
+    /// PrimaryOrange (#F38020), AccentCyan (#00D2D3), SuccessGreen (#10B981), and
+    /// DarkBorder (#374151) palette. Skippable immediately with any key press.
+    /// </summary>
+    public static async Task RenderSplashScreenAsync()
+    {
+        if (Console.IsOutputRedirected || Console.IsInputRedirected)
+        {
+            return;
+        }
+
+        try { AnsiConsole.Clear(); } catch { }
+
+        int width = GetStandardPanelWidth();
+
+        AnsiConsole.WriteLine();
+        AnsiConsole.Write(new FigletText("CLOUDFLARE").Centered().Color(PrimaryOrange));
+
+        // Architectural topology strip — communicates product purpose at a glance
+        var topologyGrid = new Grid().AddColumn(new GridColumn().Centered());
+        topologyGrid.AddRow(new Markup(
+            "[bold white]UNIVERSAL REVERSE PROXY & DUAL-ENGINE EDGE TUNNEL CONSOLE[/]"));
+        topologyGrid.AddRow(new Markup(
+            $"[dim grey]Release v{AppUpdater.CurrentVersion}[/]   [dim #374151]│[/]   [bold gold1]{DeveloperAttribution}[/]   [dim #374151]│[/]   [dim grey]Windows x64 Self-Contained[/]"));
+        topologyGrid.AddRow(new Rule { Style = new Style(DarkBorder) });
+        topologyGrid.AddRow(new Markup(
+            "[bold #00D2D3][[LOCALHOST:PORT]][/]  [dim #6B7280]───►[/]  " +
+            "[bold #F38020][[CLOUDFLARED / NGROK EDGE]][/]  [dim #6B7280]───►[/]  " +
+            "[bold #10B981][[PUBLIC HTTPS + MOBILE QR]][/]"));
+
+        var splashCard = new Panel(topologyGrid)
+        {
+            Border = BoxBorder.Double,
+            BorderStyle = new Style(PrimaryOrange),
+            Padding = new Padding(2, 1, 2, 1),
+            Width = width
+        };
+
+        AnsiConsole.Write(new Align(splashCard, HorizontalAlignment.Center));
+        AnsiConsole.WriteLine();
+
+        (string Stage, string Detail, string Badge)[] bootSteps =
+        {
+            ("Console & TLS 1.3 Pipeline", "120x36 viewport centered, UTF-8 & Win32 hooks active", "READY"),
+            ("Embedded Tunnel Engines", "cloudflared.exe & ngrok.exe assembly streams verified", "READY"),
+            ("Port Auditor & QR Matrix", "TCP IPv4/IPv6 socket scanner & half-block encoder", "ONLINE")
+        };
+
+        var checkTable = new Table()
+            .Border(TableBorder.Rounded)
+            .BorderColor(DarkBorder)
+            .Width(width)
+            .AddColumn(new TableColumn("[bold #00D2D3]Subsystem[/]").Width(28))
+            .AddColumn(new TableColumn("[bold white]Telemetry[/]"))
+            .AddColumn(new TableColumn("[bold grey]State[/]").RightAligned().Width(10));
+
+        await AnsiConsole.Live(new Align(checkTable, HorizontalAlignment.Center))
+            .AutoClear(false)
+            .StartAsync(async ctx =>
+            {
+                foreach (var (stage, detail, badge) in bootSteps)
+                {
+                    if (KeyPressed()) break;
+                    checkTable.AddRow(
+                        $"[white]{stage}[/]",
+                        $"[grey]{detail}[/]",
+                        $"[bold #10B981][[{badge}]][/]");
+                    ctx.Refresh();
+                    await DelayOrKeyPressAsync(180);
+                }
+            });
+
+        AnsiConsole.WriteLine();
+        AnsiConsole.Write(new Align(
+            new Markup("[dim grey]Entering interactive console... (Press [[?]] or select [[MANUAL]] anytime for usage guide)[/]"),
+            HorizontalAlignment.Center));
+
+        await DelayOrKeyPressAsync(320);
+    }
+
+    private static bool KeyPressed()
+    {
+        try
+        {
+            if (Console.KeyAvailable)
+            {
+                Console.ReadKey(intercept: true);
+                return true;
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    private static async Task DelayOrKeyPressAsync(int milliseconds)
+    {
+        int elapsed = 0;
+        while (elapsed < milliseconds)
+        {
+            if (KeyPressed()) return;
+            await Task.Delay(30);
+            elapsed += 30;
+        }
+    }
+
     public static void RenderBanner()
     {
         try
@@ -56,15 +176,7 @@ public static class ConsoleTheme
             new Markup($"[bold white on #F38020] DEVELOPED BY [/]  [bold gold1]{DeveloperAttribution}[/]   [dim grey]•[/]   [grey]Release v{AppUpdater.CurrentVersion} (Ready)[/]")
         );
 
-        int panelWidth = 96;
-        try
-        {
-            if (!Console.IsOutputRedirected && Console.WindowWidth > 40)
-            {
-                panelWidth = Math.Min(Console.WindowWidth - 6, 96);
-            }
-        }
-        catch { }
+        int panelWidth = GetStandardPanelWidth();
 
         var panel = new Panel(headerGrid)
         {

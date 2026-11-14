@@ -15,6 +15,7 @@ try { Console.Title = $"Cloudflare Tunnel Manager | Developed by {ConsoleTheme.D
 ConsoleWindowHelper.CenterAndConfigureWindow();
 AppUpdater.CleanupOldUpdateBinary();
 _ = AppUpdater.CheckOnStartupAsync();
+await ConsoleTheme.RenderSplashScreenAsync();
 
 var binaryManager = new BinaryManager();
 var portScanner = new SystemPortScanner();

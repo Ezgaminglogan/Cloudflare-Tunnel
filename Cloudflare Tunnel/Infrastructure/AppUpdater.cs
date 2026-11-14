@@ -12,7 +12,7 @@ public sealed record ReleaseInfo(
 
 public static class AppUpdater
 {
-    public const string CurrentVersion = "2.0.0";
+    public const string CurrentVersion = "2.1.0";
     public const string LatestReleaseApiUrl = "https://api.github.com/repos/Ezgaminglogan/Cloudflare-Tunnel/releases/latest";
 
     internal static bool IsNewerVersion(string currentVersion, string latestTag)
